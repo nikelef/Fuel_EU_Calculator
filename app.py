@@ -1,4 +1,4 @@
-# app.py — GFI Bunkering Optimizer
+# app.py — Fuel EU Calculator
 # ------------------------------------------------
 # Single-vessel Streamlit app with energy-neutral optimization (closed-form).
 # Units:
