@@ -271,8 +271,8 @@ def optimize_energy_neutral(
 # ──────────────────────────────────────────────────────────────────────────────
 # UI — Streamlit
 # ──────────────────────────────────────────────────────────────────────────────
-st.set_page_config(page_title="Feul_EU Calculator", layout="wide")
-st.title("Feul_EU Calculator - TMS DRY")
+st.set_page_config(page_title="Fuel_EU_Calculator", layout="wide")
+st.title("Fuel_EU_Calculator-TMS DRY")
 
 with st.expander("Methodology & Units", expanded=False):
     st.markdown(
@@ -551,7 +551,7 @@ with pd.ExcelWriter(buf, engine="openpyxl") as xw:
 st.download_button(
     label="Download results (Excel)",
     data=buf.getvalue(),
-    file_name="GFI_Bunkering_Optimizer_1_1.xlsx",
+    file_name="Fuel_EU_Calculator.xlsx",
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 )
 
