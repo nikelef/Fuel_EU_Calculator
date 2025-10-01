@@ -1,113 +1,76 @@
-# app.py — Fuel EU Calculator
+# app.py — FuelEU Cost Calculator (Single Vessel)
 # ------------------------------------------------
-# Single-vessel Streamlit app with energy-neutral optimization (closed-form).
-# Units:
-#   Mass: tons
-#   LCV : MJ/ton
-#   WtW : gCO2eq/MJ
+# A transparent Streamlit tool to estimate a ship’s FuelEU Maritime
+# compliance status and cost exposure by year.
+#
+# What it covers (high level):
+# • GHG-intensity (WtW) vs annual target (baseline 91.16 gCO2e/MJ)
+# • Penalty for GHG-intensity deficit (Annex IV) using 2,400 €/t VLSFOe (= ~58.54 €/GJ)
+# • OPS non-compliance penalty for container/passenger ships (from 2030)
+# • Optional RFNBO sub-target penalty (2% from 2034 if sector uptake <1% in 2031)
+# • Correct geographical scope treatment: 100% intra-EU, 50% extra-EU
+#
+# IMPORTANT:
+# • Use certified/default WtW factors (Annex II / verifier guidance).
+# • This tool is a planning aid; the verifier computes the official balances.
 
 from __future__ import annotations
 
 import io
 import json
 from dataclasses import dataclass
-from typing import Dict, Tuple, List
+from typing import Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
-import plotly.express as px
 import streamlit as st
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Constants
+# Constants & configuration
 # ──────────────────────────────────────────────────────────────────────────────
-GFI2008 = 93.3  # gCO2eq/MJ (baseline intensity)
 
-ZT_BASE = {
-    2028: 4.0,
-    2029: 6.0,
-    2030: 8.0,
-    2031: 12.4,
-    2032: 16.8,
-    2033: 21.2,
-    2034: 25.6,
-    2035: 30.0,
-}
-ZT_DIRECT = {
-    2028: 17.0,
-    2029: 19.0,
-    2030: 21.0,
-    2031: 25.4,
-    2032: 29.8,
-    2033: 34.2,
-    2034: 38.6,
-    2035: 43.0,
-}
-YEARS = list(range(2028, 2036))
+DEFAULTS_PATH = ".fueleu_defaults.json"
 
-# Cost rates (USD per tCO2eq)
-TIER1_COST = 100.0
-TIER2_COST = 380.0
-BENEFIT_RATE = 190.0  # negative mass → negative $ (credit)
+# Baseline (2020 fleet avg, gCO2e/MJ) — used for targets
+GHG_REF_2020 = 91.16  # gCO2e/MJ
 
-# Defaults persistence file
-DEFAULTS_PATH = ".gfi_bunkering_defaults.json"
-
-# Labels (for UI)
-CF_LABELS = {
-    "HFO": "HFO",
-    "LFO": "LFO",
-    "MDO": "MDO/MGO",
-    "BIO": "BIO",
+# Anchor reduction targets vs 2020 (Reg. (EU) 2023/1805):
+# 2025: −2%, 2030: −6%, 2035: −14.5%, 2040: −31%, 2045: −62%, 2050: −80%
+REDUCTION_ANCHORS = {
+    2025: 2.0,
+    2030: 6.0,
+    2035: 14.5,
+    2040: 31.0,
+    2045: 62.0,
+    2050: 80.0,
 }
 
+# GHG-intensity penalty rate (Annex IV, expressed equivalently):
+EUR_PER_TON_VLSFOE = 2400.0
+MJ_PER_TON_VLSFOE = 41000.0
+EUR_PER_GJ_NONCOMPL = EUR_PER_TON_VLSFOE / (MJ_PER_TON_VLSFOE / 1000.0)  # ≈ 58.54 €/GJ
+
+# OPS penalty (Annex IV): €1.5 × (kW at berth) × (non-compliant hours, rounded up)
+OPS_EUR_PER_KWH = 1.5
+
+YEARS = list(range(2025, 2051))
+FUEL_COLUMNS = [
+    "Fuel",
+    "Mass_t",
+    "LCV_MJ_per_t",
+    "WtW_g_per_MJ",
+    "Is_RFNBO",
+]
+
+ELECTRICITY_COLUMNS = [
+    "OPS_Electricity_MWh",
+    "Elec_WtW_g_per_MJ",
+]
+
 # ──────────────────────────────────────────────────────────────────────────────
-# Data & utils
+# Helpers
 # ──────────────────────────────────────────────────────────────────────────────
-@dataclass
-class FuelInputs:
-    # Masses [t]
-    HFO_t: float
-    LFO_t: float
-    MDO_t: float
-    BIO_t: float
-
-    # WtW [gCO2eq/MJ]
-    WtW_HFO: float
-    WtW_LFO: float
-    WtW_MDO: float
-    WtW_BIO: float
-
-    # LCV [MJ/t]
-    LCV_HFO: float
-    LCV_LFO: float
-    LCV_MDO: float
-    LCV_BIO: float
-
-    # Premium USD/t (Bio − Selected Fuel)
-    PREMIUM: float
-
-    def total_MJ(self) -> float:
-        return (
-            self.HFO_t * self.LCV_HFO
-            + self.LFO_t * self.LCV_LFO
-            + self.MDO_t * self.LCV_MDO
-            + self.BIO_t * self.LCV_BIO
-        )
-
-    def gfi(self) -> float:
-        denom = self.total_MJ()
-        if denom <= 0:
-            return 0.0
-        num_g = (
-            self.HFO_t * self.LCV_HFO * self.WtW_HFO
-            + self.LFO_t * self.LCV_LFO * self.WtW_LFO
-            + self.MDO_t * self.LCV_MDO * self.WtW_MDO
-            + self.BIO_t * self.LCV_BIO * self.WtW_BIO
-        )
-        return num_g / denom  # gCO2eq/MJ
-
 
 def load_defaults() -> Dict:
     try:
@@ -116,7 +79,6 @@ def load_defaults() -> Dict:
     except Exception:
         return {}
 
-
 def save_defaults(dct: Dict) -> None:
     try:
         with open(DEFAULTS_PATH, "w", encoding="utf-8") as f:
@@ -124,435 +86,390 @@ def save_defaults(dct: Dict) -> None:
     except Exception:
         pass
 
+def piecewise_linear_target(year: int) -> float:
+    """
+    Return the GHG target (gCO2e/MJ) for the given year using linear interpolation
+    between the regulation’s anchor reductions. This is suitable for planning;
+    the official path is defined by the Regulation.
+    """
+    if year <= min(REDUCTION_ANCHORS):
+        r = REDUCTION_ANCHORS[min(REDUCTION_ANCHORS)]
+    elif year >= max(REDUCTION_ANCHORS):
+        r = REDUCTION_ANCHORS[max(REDUCTION_ANCHORS)]
+    else:
+        # interpolate between anchor points
+        anchors = sorted(REDUCTION_ANCHORS.items())
+        for (y0, r0), (y1, r1) in zip(anchors[:-1], anchors[1:]):
+            if y0 <= year <= y1:
+                frac = (year - y0) / (y1 - y0)
+                r = r0 + frac * (r1 - r0)
+                break
+    return (1.0 - r / 100.0) * GHG_REF_2020
 
-# Targets
-GFI_BASE = {yr: (1 - ZT_BASE[yr] / 100.0) * GFI2008 for yr in YEARS}
-GFI_DIRECT = {yr: (1 - ZT_DIRECT[yr] / 100.0) * GFI2008 for yr in YEARS}
+def clamp01(x: float) -> float:
+    return max(0.0, min(1.0, float(x)))
+
+def _fmt_money(x: float) -> str:
+    return f"€{x:,.0f}"
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Core calculations
 # ──────────────────────────────────────────────────────────────────────────────
-def deficit_surplus_tCO2eq(gfi_g_per_MJ: float, total_MJ: float, year: int) -> float:
-    """GFI_Deficit_Surplus_year in tCO2eq. Positive = deficit, Negative = surplus."""
-    if total_MJ <= 0:
-        return 0.0
 
-    base = GFI_BASE[year]
-    direct = GFI_DIRECT[year]
+@dataclass
+class ScopeShares:
+    intra_eu_share: float  # fraction of yearly energy used on intra-EU/EEA voyages/ports
+    extra_eu_share: float  # fraction on voyages to/from third countries
+    # remainder is non-scope (third-country to third-country), implicitly 0%
 
-    if gfi_g_per_MJ > base:
-        # (GFI−Base + Base−Direct) * MJ
-        g_g = (gfi_g_per_MJ - direct) * total_MJ
-    elif gfi_g_per_MJ >= direct:
-        g_g = (gfi_g_per_MJ - direct) * total_MJ
+    @property
+    def scope_weight(self) -> float:
+        """
+        Effective scope multiplier: 1.0 for intra-EU share; 0.5 for extra-EU share.
+        Used to scale total energy and emissions into the Regulation’s scope, assuming
+        uniform fuel mix across legs (planning approximation).
+        """
+        f_intra = clamp01(self.intra_eu_share)
+        f_extra = clamp01(self.extra_eu_share)
+        f_out = max(0.0, 1.0 - f_intra - f_extra)
+        return f_intra * 1.0 + f_extra * 0.5  # out-of-scope ignored (0%)
+
+@dataclass
+class Inputs:
+    year: int
+    fuels: pd.DataFrame  # columns: FUEL_COLUMNS
+    electricity: pd.Series  # index: ELECTRICITY_COLUMNS
+    scope: ScopeShares
+    apply_rfnbo_reward: bool  # 2x energy credit through 2033
+    rfnbo_subtarget_on: bool  # (from 2034 if sector-wide RFNBO<1% in 2031)
+    rfnbo_price_gap_eur_per_t_vlsfoe: float  # Pd for RFNBO subtarget penalty
+    vessel_type: str        # "Other" | "Container" | "Passenger"
+    ops_berth_kw: float     # total electric power demand at berth (kW)
+    ops_noncompliant_hours: float  # non-compliant hours in covered ports (rounded up)
+    consecutive_prev_penalty_years: int  # n_prev for escalation (0,1,2,...)
+
+@dataclass
+class Results:
+    target_g_per_MJ: float
+    achieved_g_per_MJ: float
+    scope_energy_MJ_incl_ops: float
+    scope_energy_MJ_excl_ops: float
+    noncompliance_pct: float
+    ghg_penalty_eur: float
+    ops_penalty_eur: float
+    rfnbo_sub_penalty_eur: float
+    total_penalty_eur: float
+
+def compute_ghg_intensity_and_penalties(inp: Inputs) -> Results:
+    df = inp.fuels.copy()
+    # Clean & types
+    for col in ["Mass_t", "LCV_MJ_per_t", "WtW_g_per_MJ"]:
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
+    df["Is_RFNBO"] = df["Is_RFNBO"].astype(bool)
+
+    # Base energy (MJ) per fuel
+    df["Energy_MJ"] = df["Mass_t"] * df["LCV_MJ_per_t"]
+
+    # Electricity at berth (OPS used) — MJ
+    ops_mwh = float(inp.electricity.get("OPS_Electricity_MWh", 0.0) or 0.0)
+    elec_wtw = float(inp.electricity.get("Elec_WtW_g_per_MJ", 0.0) or 0.0)
+    elec_MJ = ops_mwh * 3600.0  # 1 MWh = 3,600 MJ
+
+    # Scope weighting (planning approximation: same fuel mix on all legs)
+    w_scope = inp.scope.scope_weight
+
+    # RFNBO reward factor (denominator only) through 2033 (incl.)
+    rwd_active = inp.apply_rfnbo_reward and (inp.year <= 2033)
+
+    df["Denom_MJ_eff"] = df["Energy_MJ"] * (np.where(df["Is_RFNBO"] & rwd_active, 2.0, 1.0))
+    # Scope-adjusted totals
+    total_energy_MJ = df["Energy_MJ"].sum()
+    total_denom_MJ_eff = df["Denom_MJ_eff"].sum()
+    num_grams = (df["Energy_MJ"] * df["WtW_g_per_MJ"]).sum()
+
+    # Add electricity (GHG intensity calc includes all energy used onboard)
+    total_energy_MJ += elec_MJ
+    total_denom_MJ_eff += elec_MJ  # no reward for grid electricity
+    num_grams += elec_MJ * elec_wtw
+
+    # Apply geographical scope to numerator & denominators
+    scope_energy_MJ_incl_ops = total_energy_MJ * w_scope
+    scope_denom_MJ_eff = total_denom_MJ_eff * w_scope
+    scope_num_grams = num_grams * w_scope
+
+    # Achieved GHG intensity (g/MJ); guard zero
+    if scope_denom_MJ_eff <= 0:
+        achieved_g_per_MJ = 0.0
     else:
-        g_g = (gfi_g_per_MJ - direct) * total_MJ  # negative surplus
+        achieved_g_per_MJ = scope_num_grams / scope_denom_MJ_eff
 
-    return g_g / 1e6  # grams → tonnes
+    # Year target
+    target_g_per_MJ = piecewise_linear_target(inp.year)
 
+    # Non-compliance percentage = percentage reduction needed to reach the target
+    # As per EC Q&A: “percentage by which the actual GHG intensity should have been reduced”:
+    # max(0, (Achieved - Target) / Achieved)
+    noncompliance_pct = 0.0
+    if achieved_g_per_MJ > 0.0:
+        noncompliance_pct = max(0.0, (achieved_g_per_MJ - target_g_per_MJ) / achieved_g_per_MJ)
 
-def tier_costs_usd(gfi_g_per_MJ: float, total_MJ: float, year: int) -> Tuple[float, float, float]:
-    """Return (Tier1 USD, Tier2 USD, Benefit USD). Benefit negative below Direct."""
-    if total_MJ <= 0:
-        return 0.0, 0.0, 0.0
+    # Penalty energy excludes OPS electricity (per Art. 16(4)(d))
+    scope_energy_MJ_excl_ops = (df["Energy_MJ"].sum()) * w_scope
 
-    base = GFI_BASE[year]
-    direct = GFI_DIRECT[year]
-
-    if gfi_g_per_MJ > base:
-        tier1_mt = (base - direct) * total_MJ / 1e6
-        tier2_mt = (gfi_g_per_MJ - base) * total_MJ / 1e6
-        benefit_mt = 0.0
-    elif gfi_g_per_MJ >= direct:
-        tier1_mt = (gfi_g_per_MJ - direct) * total_MJ / 1e6
-        tier2_mt = 0.0
-        benefit_mt = 0.0
+    # GHG-intensity penalty (Annex IV):
+    noncompliant_MJ = scope_energy_MJ_excl_ops * noncompliance_pct
+    ghg_penalty_base = (noncompliant_MJ / 1000.0) * EUR_PER_GJ_NONCOMPL  # MJ→GJ
+    # Escalation if consecutive deficits in previous years: multiply by (1 + n_prev/10)
+    if noncompliance_pct > 0.0 and inp.consecutive_prev_penalty_years > 0:
+        factor = 1.0 + (inp.consecutive_prev_penalty_years / 10.0)
     else:
-        tier1_mt = 0.0
-        tier2_mt = 0.0
-        benefit_mt = (gfi_g_per_MJ - direct) * total_MJ / 1e6  # negative
+        factor = 1.0
+    ghg_penalty_eur = ghg_penalty_base * factor
 
-    t1_usd = tier1_mt * TIER1_COST
-    t2_usd = tier2_mt * TIER2_COST
-    ben_usd = benefit_mt * BENEFIT_RATE
-    return t1_usd, t2_usd, ben_usd
+    # OPS penalty (for container/passenger from 2030 at covered ports):
+    ops_penalty_eur = 0.0
+    if inp.year >= 2030 and inp.vessel_type in {"Container", "Passenger"}:
+        hours = float(np.ceil(max(0.0, inp.ops_noncompliant_hours)))
+        ops_penalty_eur = OPS_EUR_PER_KWH * max(0.0, inp.ops_berth_kw) * hours
 
+    # RFNBO sub-target penalty (optional; 2% from 2034 if triggered by sector uptake result)
+    rfnbo_sub_penalty_eur = 0.0
+    if inp.rfnbo_subtarget_on and inp.year >= 2034:
+        rfnbo_energy_MJ = df.loc[df["Is_RFNBO"], "Energy_MJ"].sum() * w_scope  # actual energy (no reward)
+        required_MJ = 0.02 * scope_energy_MJ_excl_ops
+        shortfall_MJ = max(0.0, required_MJ - rfnbo_energy_MJ)
+        if shortfall_MJ > 0.0 and inp.rfnbo_price_gap_eur_per_t_vlsfoe > 0:
+            # Annex IV concept: shortfall (VLSFOe) × Pd
+            shortfall_t_vlsfoe = shortfall_MJ / MJ_PER_TON_VLSFOE
+            rfnbo_sub_penalty_eur = shortfall_t_vlsfoe * inp.rfnbo_price_gap_eur_per_t_vlsfoe
 
-def optimize_energy_neutral(
-    fi: FuelInputs,
-    year: int,
-    reduce_fuel: str = "HFO",  # "HFO" | "LFO" | "MDO/MGO"
-    coarse_steps: int = 200,    # accepted for compatibility (unused)
-    fine_window: float = 0.02,  # accepted for compatibility (unused)
-    fine_step: float = 0.001,   # accepted for compatibility (unused)
-) -> Tuple[float, float, float, float, float]:
-    """
-    Closed-form optimizer: TotalCost(f) is piecewise-linear in f with kinks only at
-    GFI == Direct_y and GFI == Base_y. Therefore the global minimum lies in
-    {0, f_direct, f_base, 1}. Returns:
-    (selected_fuel_reduction_t, bio_increase_t, gfi_new, reg_cost_usd, premium_cost_usd)
-    """
-    # Map selected fuel
-    if reduce_fuel == "HFO":
-        sel_mass0, sel_lcv, sel_wtw = fi.HFO_t, fi.LCV_HFO, fi.WtW_HFO
-    elif reduce_fuel == "LFO":
-        sel_mass0, sel_lcv, sel_wtw = fi.LFO_t, fi.LCV_LFO, fi.WtW_LFO
-    else:  # "MDO/MGO"
-        sel_mass0, sel_lcv, sel_wtw = fi.MDO_t, fi.LCV_MDO, fi.WtW_MDO
+    total_penalty_eur = ghg_penalty_eur + ops_penalty_eur + rfnbo_sub_penalty_eur
 
-    D0 = fi.total_MJ()
-    if sel_mass0 <= 0 or fi.LCV_BIO <= 0 or D0 <= 0:
-        return 0.0, 0.0, fi.gfi(), 0.0, 0.0
-
-    # GFI(f) = G0 + s*f
-    G0 = fi.gfi()
-    s = (sel_mass0 * sel_lcv / D0) * (fi.WtW_BIO - sel_wtw)
-
-    def eval_total(f: float) -> Tuple[float, float, float, float, float]:
-        # New masses after reducing selected fuel by fraction f and increasing BIO for energy neutrality
-        sel_new = sel_mass0 * (1.0 - f)
-        d_sel = sel_mass0 - sel_new
-        bio_new = fi.BIO_t + (d_sel * sel_lcv) / fi.LCV_BIO
-
-        hfo_new, lfo_new, mdo_new = fi.HFO_t, fi.LFO_t, fi.MDO_t
-        if reduce_fuel == "HFO":
-            hfo_new = sel_new
-        elif reduce_fuel == "LFO":
-            lfo_new = sel_new
-        else:
-            mdo_new = sel_new
-
-        total_MJ = (
-            hfo_new * fi.LCV_HFO
-            + lfo_new * fi.LCV_LFO
-            + mdo_new * fi.LCV_MDO
-            + bio_new * fi.LCV_BIO
-        )
-
-        if total_MJ <= 0:
-            return np.inf, 0.0, 0.0, 0.0, 0.0
-
-        num_g = (
-            hfo_new * fi.LCV_HFO * fi.WtW_HFO
-            + lfo_new * fi.LCV_LFO * fi.WtW_LFO
-            + mdo_new * fi.LCV_MDO * fi.WtW_MDO
-            + bio_new * fi.LCV_BIO * fi.WtW_BIO
-        )
-        gfi_new = num_g / total_MJ
-
-        t1, t2, ben = tier_costs_usd(gfi_new, total_MJ, year)
-        reg_cost = t1 + t2 + ben
-        premium_cost = max(bio_new - fi.BIO_t, 0.0) * fi.PREMIUM
-        total_cost = reg_cost + premium_cost
-        return total_cost, gfi_new, reg_cost, premium_cost, d_sel
-
-    # Candidate fractions
-    candidates: List[float] = [0.0, 1.0]
-    if abs(s) > 0:
-        f_direct = (GFI_DIRECT[year] - G0) / s
-        f_base = (GFI_BASE[year] - G0) / s
-        if 0.0 <= f_direct <= 1.0:
-            candidates.append(float(f_direct))
-        if 0.0 <= f_base <= 1.0:
-            candidates.append(float(f_base))
-
-    best = None
-    for f in candidates:
-        tot, gfi_new, reg, prem, d_sel = eval_total(f)
-        if (best is None) or (tot < best[0] - 1e-12):
-            best = (tot, f, gfi_new, reg, prem, d_sel)
-
-    _, f_best, gfi_best, reg_best, prem_best, d_sel_best = best
-    sel_red = d_sel_best
-    bio_inc = (sel_red * sel_lcv) / fi.LCV_BIO if fi.LCV_BIO > 0 else 0.0
-    return sel_red, bio_inc, gfi_best, reg_best, prem_best
-
+    return Results(
+        target_g_per_MJ=target_g_per_MJ,
+        achieved_g_per_MJ=achieved_g_per_MJ,
+        scope_energy_MJ_incl_ops=scope_energy_MJ_incl_ops,
+        scope_energy_MJ_excl_ops=scope_energy_MJ_excl_ops,
+        noncompliance_pct=noncompliance_pct,
+        ghg_penalty_eur=ghg_penalty_eur,
+        ops_penalty_eur=ops_penalty_eur,
+        rfnbo_sub_penalty_eur=rfnbo_sub_penalty_eur,
+        total_penalty_eur=total_penalty_eur,
+    )
 
 # ──────────────────────────────────────────────────────────────────────────────
 # UI — Streamlit
 # ──────────────────────────────────────────────────────────────────────────────
-st.set_page_config(page_title="Fuel_EU_Calculator", layout="wide")
-st.title("Fuel_EU_Calculator-TMS DRY")
 
-with st.expander("Methodology & Units", expanded=False):
+st.set_page_config(page_title="FuelEU Cost Calculator", layout="wide")
+st.title("FuelEU Cost Calculator — Single Vessel")
+
+with st.expander("Methodology (concise) & Units", expanded=False):
     st.markdown(
-        r"""
-**Formulas:**
+        """
+**GHG intensity (achieved)**  \\
+\\( I = \\frac{\\sum_i E_i\\,\\cdot\\,WtW_i}{\\sum_i E_i^{\\mathrm{eff}}} \\) in gCO₂e/MJ, where  
+• \\(E_i = m_i \\cdot LCV_i\\) (MJ), \\(WtW_i\\) is in g/MJ.  
+• For RFNBOs (2025–2033), \\(E_i^{\\mathrm{eff}} = 2\\,E_i\\) (reward factor); else \\(E_i^{\\mathrm{eff}}=E_i\\).  
+• Electricity at berth is included in intensity (with its grid WtW).  
+• Geographical scope (planning approx.): numerator & denominators scaled by \\(1.0\\times\\text{intra} + 0.5\\times\\text{extra}\\).
 
-- **GFI** \[gCO₂e/MJ] = \(\frac{\sum_i m_i \cdot LCV_i \cdot WtW_i}{\sum_i m_i \cdot LCV_i}\)
-- **Deficit/Surplus** \[tCO₂e] for year *y*:
-  - If \(GFI > Base_y\): \((GFI−Direct_y)\cdot TotalMJ / 10^6\)
-  - If \(Direct_y \le GFI \le Base_y\): \((GFI−Direct_y)\cdot TotalMJ / 10^6\)
-  - If \(GFI < Direct_y\): \((GFI−Direct_y)\cdot TotalMJ / 10^6\) (negative surplus)
-- **Tier costs** \[USD]: Tier-1 = 100, Tier-2 = 380, Benefit = 190 × (negative mass)
-- **Optimization (per year)**: reduce **selected fuel (HFO/LFO/MDO-MGO)** by Δt and
-  increase **BIO** by Δt·LCV_sel/LCV_BIO (energy-neutral). Objective:
-  minimize \(Tier1 + Tier2 + Benefit + Premium \cdot \max(\Delta BIO,0)\).
+**Year target**  \\
+Baseline 91.16 g/MJ reduced by: 2025 **2%**, 2030 **6%**, 2035 **14.5%**, 2040 **31%**, 2045 **62%**, 2050 **80%**.  
+We linearly interpolate between anchor years for planning.
 
-**Units**: Mass in tons; LCV in MJ/ton; WtW in gCO₂e/MJ.
-"""
+**Non-compliance percentage**  \\
+\\( p = \\max(0,\\, (I - I_{\\text{target}})/I) \\).
+
+**GHG penalty (Annex IV)**  \\
+Non-compliant energy = \\(p \\times E_{\\text{scope, excl OPS}}\\). Penalty = **≈ €58.54/GJ** × non-compliant energy (MJ→GJ). Consecutive deficits multiply by \\(1+n_{prev}/10\\).
+
+**OPS penalty** (from 2030 for container/passenger at covered ports)  \\
+€1.5 × **kW at berth** × **non-compliant hours** (rounded up).
+
+**RFNBO sub-target penalty** (if applicable from 2034)  \\
+If enforced: shortfall vs **2%** of \\(E_{\\text{scope, excl OPS}}\\) × **Pd** (€/t VLSFOe).
+        """
     )
 
-# Load persisted defaults
 states = load_defaults()
 
-# Sidebar inputs
-st.sidebar.header("Inputs")
+# ---- Sidebar inputs
+st.sidebar.header("Scenario Inputs")
 
-colA, colB = st.sidebar.columns(2)
-HFO_t = colA.number_input(f"{CF_LABELS['HFO']} (tons)", min_value=0.0, value=float(states.get("HFO_t", 100.0)), step=0.1)
-LFO_t = colB.number_input(f"{CF_LABELS['LFO']} (tons)", min_value=0.0, value=float(states.get("LFO_t", 0.0)), step=0.1)
-MDO_t = colA.number_input(f"{CF_LABELS['MDO']} (tons)", min_value=0.0, value=float(states.get("MDO_t", 0.0)), step=0.1)
-BIO_t = colB.number_input(f"{CF_LABELS['BIO']} (tons)", min_value=0.0, value=float(states.get("BIO_t", 0.0)), step=0.1)
+year = st.sidebar.selectbox("Year", YEARS, index=YEARS.index(2025))
+vessel_type = st.sidebar.selectbox("Vessel type (OPS obligation from 2030)", ["Other", "Container", "Passenger"])
 
+st.sidebar.markdown("**Geographical scope (energy shares)**")
+col_g1, col_g2 = st.sidebar.columns(2)
+intra_share = col_g1.number_input("Intra-EU share (0–1)", min_value=0.0, max_value=1.0,
+                                  value=float(states.get("intra_share", 1.0)), step=0.05, format="%.2f")
+extra_share = col_g2.number_input("Extra-EU share (0–1)", min_value=0.0, max_value=1.0,
+                                  value=float(states.get("extra_share", 0.0)), step=0.05, format="%.2f")
+
+# RFNBO settings
 st.sidebar.markdown("---")
-colC, colD = st.sidebar.columns(2)
-WtW_HFO = colC.number_input("WtW HFO [gCO₂e/MJ]", min_value=0.0, value=float(states.get("WtW_HFO", 92.784)), step=0.001, format="%.3f")
-WtW_LFO = colD.number_input("WtW LFO [gCO₂e/MJ]", min_value=0.0, value=float(states.get("WtW_LFO", 91.251)), step=0.001, format="%.3f")
-WtW_MDO = colC.number_input("WtW MDO/MGO [gCO₂e/MJ]", min_value=0.0, value=float(states.get("WtW_MDO", 93.932)), step=0.001, format="%.3f")
-WtW_BIO = colD.number_input("WtW BIO [gCO₂e/MJ]", min_value=0.0, value=float(states.get("WtW_BIO", 70.366)), step=0.001, format="%.3f")
+apply_rfnbo_reward = st.sidebar.checkbox("Apply RFNBO reward factor (2× energy) (2025–2033)", value=True)
+rfnbo_subtarget_on = st.sidebar.checkbox("RFNBO sub-target enforced? (2% from 2034)", value=False)
+rfnbo_price_gap = st.sidebar.number_input("Pd for RFNBO sub-target penalty [€/t VLSFOe]", min_value=0.0,
+                                          value=float(states.get("rfnbo_price_gap", 0.0)), step=50.0)
 
+# OPS inputs
 st.sidebar.markdown("---")
-colE, colF = st.sidebar.columns(2)
-LCV_HFO = colE.number_input("LCV HFO [MJ/ton]", min_value=0.0, value=float(states.get("LCV_HFO", 40200.0)), step=100.0)
-LCV_LFO = colF.number_input("LCV LFO [MJ/ton]", min_value=0.0, value=float(states.get("LCV_LFO", 41000.0)), step=100.0)
-LCV_MDO = colE.number_input("LCV MDO/MGO [MJ/ton]", min_value=0.0, value=float(states.get("LCV_MDO", 42700.0)), step=100.0)
-LCV_BIO = colF.number_input("LCV BIO [MJ/ton]", min_value=0.0, value=float(states.get("LCV_BIO", 37000.0)), step=100.0)
+ops_kw = st.sidebar.number_input("OPS berth power, kW (for penalty calc)", min_value=0.0,
+                                 value=float(states.get("ops_kw", 1500.0)), step=100.0)
+ops_hours = st.sidebar.number_input("Non-compliant hours at covered ports (year)", min_value=0.0,
+                                    value=float(states.get("ops_hours", 0.0)), step=1.0)
 
+# Penalty escalation
 st.sidebar.markdown("---")
-reduce_choice = st.sidebar.selectbox(
-    "Fuel to reduce (for optimization)",
-    options=["HFO", "LFO", "MDO/MGO"],
-    index=int(states.get("reduce_idx", 0))
-)
+n_prev = st.sidebar.number_input("Consecutive previous penalty years (0,1,2…)", min_value=0, step=1,
+                                 value=int(states.get("n_prev", 0)))
 
-PREMIUM = st.sidebar.number_input(
-    f"Premium [USD/ton] (Biofuel − {reduce_choice})",
-    min_value=0.0,
-    value=float(states.get("PREMIUM", 305.0)),
-    step=10.0
-)
-
-if st.sidebar.button("Save as defaults", use_container_width=True):
-    new_states = {
-        "HFO_t": HFO_t, "LFO_t": LFO_t, "MDO_t": MDO_t, "BIO_t": BIO_t,
-        "WtW_HFO": WtW_HFO, "WtW_LFO": WtW_LFO, "WtW_MDO": WtW_MDO, "WtW_BIO": WtW_BIO,
-        "LCV_HFO": LCV_HFO, "LCV_LFO": LCV_LFO, "LCV_MDO": LCV_MDO, "LCV_BIO": LCV_BIO,
-        "PREMIUM": PREMIUM, "reduce_idx": ["HFO", "LFO", "MDO/MGO"].index(reduce_choice)
-    }
-    save_defaults(new_states)
+# Defaults save button
+if st.sidebar.button("Save inputs as defaults", use_container_width=True):
+    save_defaults({
+        "intra_share": intra_share,
+        "extra_share": extra_share,
+        "ops_kw": ops_kw,
+        "ops_hours": ops_hours,
+        "n_prev": n_prev,
+        "rfnbo_price_gap": rfnbo_price_gap
+    })
     st.sidebar.success("Defaults saved.")
 
-# Build inputs
-fi = FuelInputs(
-    HFO_t=HFO_t, LFO_t=LFO_t, MDO_t=MDO_t, BIO_t=BIO_t,
-    WtW_HFO=WtW_HFO, WtW_LFO=WtW_LFO, WtW_MDO=WtW_MDO, WtW_BIO=WtW_BIO,
-    LCV_HFO=LCV_HFO, LCV_LFO=LCV_LFO, LCV_MDO=LCV_MDO, LCV_BIO=LCV_BIO,
-    PREMIUM=PREMIUM,
+# ---- Fuels table
+st.subheader("Fuel Use & Factors (annual)")
+st.caption("Provide **Mass [t]**, **LCV [MJ/t]**, **WtW [g/MJ]**, and flag if a row is RFNBO. "
+           "Use Annex II defaults or certified values per verifier guidance.")
+
+if "fuels_df" not in st.session_state:
+    # Conservative, editable defaults — adjust to your fleet & verifier data.
+    st.session_state["fuels_df"] = pd.DataFrame([
+        ["HFO",   10000.0, 40200.0, 92.8,  False],
+        ["LFO",     500.0, 41000.0, 91.3,  False],
+        ["MDO/MGO", 800.0, 42700.0, 93.9,  False],
+        ["Biofuel",   0.0, 37000.0, 70.0,  False],
+        ["RFNBO",     0.0, 36000.0, 10.0,  True],   # example placeholder
+    ], columns=FUEL_COLUMNS)
+
+fuels_df = st.data_editor(
+    st.session_state["fuels_df"],
+    num_rows="dynamic",
+    use_container_width=True
 )
+# persist edited table
+st.session_state["fuels_df"] = fuels_df
+
+# ---- Electricity at berth (OPS) row
+st.subheader("Electricity at Berth (OPS) — if used")
+elec_defaults = {
+    "OPS_Electricity_MWh": 0.0,
+    "Elec_WtW_g_per_MJ": 25.0,  # example grid WtW; replace with appropriate national/regional factor
+}
+elec_state = {k: states.get(k, v) for k, v in elec_defaults.items()}
+col_e1, col_e2 = st.columns(2)
+ops_mwh = col_e1.number_input("OPS electricity used [MWh/year]", min_value=0.0, value=float(elec_state["OPS_Electricity_MWh"]), step=10.0)
+elec_wtw = col_e2.number_input("Electricity WtW [g/MJ]", min_value=0.0, value=float(elec_state["Elec_WtW_g_per_MJ"]), step=0.5)
+
+electricity = pd.Series({"OPS_Electricity_MWh": ops_mwh, "Elec_WtW_g_per_MJ": elec_wtw})
+
+# ---- Run calculation
+scope = ScopeShares(intra_eu_share=intra_share, extra_eu_share=extra_share)
+inp = Inputs(
+    year=year,
+    fuels=fuels_df,
+    electricity=electricity,
+    scope=scope,
+    apply_rfnbo_reward=apply_rfnbo_reward,
+    rfnbo_subtarget_on=rfnbo_subtarget_on,
+    rfnbo_price_gap_eur_per_t_vlsfoe=rfnbo_price_gap,
+    vessel_type=vessel_type,
+    ops_berth_kw=ops_kw,
+    ops_noncompliant_hours=ops_hours,
+    consecutive_prev_penalty_years=int(n_prev),
+)
+res = compute_ghg_intensity_and_penalties(inp)
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Base metrics
+# KPIs & charts
 # ──────────────────────────────────────────────────────────────────────────────
-TOTAL_MJ = fi.total_MJ()
-GFI = fi.gfi()
 
-kpi1, kpi2 = st.columns(2)
-kpi1.metric("GFI (gCO₂e/MJ)", f"{GFI:.3f}")
-kpi2.metric("Total energy (MJ)", f"{TOTAL_MJ:,.0f}")
+k1, k2, k3, k4 = st.columns(4)
+k1.metric("GHG Target (g/MJ)", f"{res.target_g_per_MJ:.2f}")
+k2.metric("GHG Achieved (g/MJ)", f"{res.achieved_g_per_MJ:.2f}")
+k3.metric("Scope energy incl. OPS (MJ)", f"{res.scope_energy_MJ_incl_ops:,.0f}")
+k4.metric("Scope energy excl. OPS (MJ)", f"{res.scope_energy_MJ_excl_ops:,.0f}")
 
-# Step-wise targets plot
-X_STEP = YEARS + [YEARS[-1] + 1]
-base_step = [GFI_BASE[y] for y in YEARS] + [GFI_BASE[YEARS[-1]]]
-direct_step = [GFI_DIRECT[y] for y in YEARS] + [GFI_DIRECT[YEARS[-1]]]
-gfi_step = [GFI] * len(X_STEP)
-baseline_step = [GFI2008] * len(X_STEP)
+k5, k6, k7 = st.columns(3)
+k5.metric("Non-compliance (%)", f"{100.0*res.noncompliance_pct:.2f}%")
+k6.metric("GHG penalty", _fmt_money(res.ghg_penalty_eur))
+k7.metric("OPS penalty", _fmt_money(res.ops_penalty_eur))
+
+k8, k9 = st.columns(2)
+k8.metric("RFNBO sub-target penalty", _fmt_money(res.rfnbo_sub_penalty_eur))
+k9.metric("TOTAL penalty", _fmt_money(res.total_penalty_eur))
+
+# Step chart: target vs achieved for the next decade for context
+years_plot = list(range(year, min(2051, year + 11)))
+targets_plot = [piecewise_linear_target(y) for y in years_plot]
+ach = [res.achieved_g_per_MJ for _ in years_plot]
 
 fig = go.Figure()
-fig.add_trace(go.Scatter(x=X_STEP, y=gfi_step, mode="lines", name="GFI attained", line=dict(width=2), line_shape="hv"))
-fig.add_trace(go.Scatter(x=X_STEP, y=base_step, mode="lines", name="Base target (step)", line=dict(dash="dash", width=2), line_shape="hv"))
-fig.add_trace(go.Scatter(x=X_STEP, y=direct_step, mode="lines", name="Direct target (step)", line=dict(dash="dot", width=2), line_shape="hv"))
-fig.add_trace(go.Scatter(x=X_STEP, y=baseline_step, mode="lines", name="Baseline 2008", line=dict(color="black", dash="longdash", width=2), line_shape="hv"))
+fig.add_trace(go.Scatter(x=years_plot, y=targets_plot, mode="lines+markers",
+                         name="Year Target", line=dict(width=2)))
+fig.add_trace(go.Scatter(x=years_plot, y=ach, mode="lines",
+                         name="Achieved (this scenario)", line=dict(dash="dash", width=2)))
 fig.update_layout(
-    height=260,
-    margin=dict(l=6, r=6, t=26, b=4),
-    yaxis_title="gCO₂e/MJ",
-    xaxis_title="Year",
-    xaxis=dict(tickmode="array", tickvals=YEARS, tickfont=dict(size=10)),
-    yaxis=dict(tickfont=dict(size=10)),
+    height=280, margin=dict(l=6, r=6, t=26, b=4),
+    yaxis_title="gCO₂e/MJ", xaxis_title="Year",
     legend=dict(orientation="h", y=-0.25)
 )
 st.plotly_chart(fig, use_container_width=True)
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Per-year calculations & optimization (deltas reported)
-# ──────────────────────────────────────────────────────────────────────────────
-rows: List[Dict] = []
+# Detailed table
+st.subheader("Detailed Results")
+details = pd.DataFrame({
+    "Metric": [
+        "Year",
+        "Scope factor (1×intra + 0.5×extra)",
+        "Target (g/MJ)",
+        "Achieved (g/MJ)",
+        "Non-compliance (%)",
+        "Scope energy incl. OPS (MJ)",
+        "Scope energy excl. OPS (MJ)",
+        "GHG penalty (€)",
+        "OPS penalty (€)",
+        "RFNBO sub-target penalty (€)",
+        "TOTAL penalty (€)",
+    ],
+    "Value": [
+        year,
+        f"{scope.scope_weight:.3f}",
+        f"{res.target_g_per_MJ:.3f}",
+        f"{res.achieved_g_per_MJ:.3f}",
+        f"{100.0*res.noncompliance_pct:.3f}%",
+        f"{res.scope_energy_MJ_incl_ops:,.0f}",
+        f"{res.scope_energy_MJ_excl_ops:,.0f}",
+        _fmt_money(res.ghg_penalty_eur),
+        _fmt_money(res.ops_penalty_eur),
+        _fmt_money(res.rfnbo_sub_penalty_eur),
+        _fmt_money(res.total_penalty_eur),
+    ]
+})
+st.dataframe(details, use_container_width=True, height=360)
 
-# Dynamic reduction column name
-if reduce_choice == "HFO":
-    red_col_name = "HFO_Reduction_For_Opt_Cost_t"
-elif reduce_choice == "LFO":
-    red_col_name = "LFO_Reduction_For_Opt_Cost_t"
-else:
-    red_col_name = "MDO/MGO_Reduction_For_Opt_Cost_t"
-
-for yr in YEARS:
-    if TOTAL_MJ <= 0:
-        deficit_t = 0.0
-        t1_usd = t2_usd = ben_usd = 0.0
-        sel_red_t = bio_inc_t = 0.0
-    else:
-        deficit_t = deficit_surplus_tCO2eq(GFI, TOTAL_MJ, yr)
-        t1_usd, t2_usd, ben_usd = tier_costs_usd(GFI, TOTAL_MJ, yr)
-        sel_red_t, bio_inc_t, gfi_new, reg_cost_opt, premium_cost_opt = optimize_energy_neutral(
-            fi, yr, reduce_fuel=reduce_choice
-        )
-
-    rows.append({
-        "Year": yr,
-        "GFI (g/MJ)": round(GFI, 6),
-        "GFI_Deficit_Surplus_tCO2eq": deficit_t,
-        "GFI_Tier_1_Cost_USD": t1_usd,
-        "GFI_Tier_2_Cost_USD": t2_usd,
-        "GFI_Benefit_USD": ben_usd,
-        # Regulatory, Premium, Total based on INITIAL values
-        "Regulatory_Cost_USD": t1_usd + t2_usd + ben_usd,
-        "Premium_Fuel_Cost_USD": PREMIUM * BIO_t,
-        "Total_Cost_USD": (t1_usd + t2_usd + ben_usd) + (PREMIUM * BIO_t),
-        # Optimization deltas at the end
-        red_col_name: sel_red_t,
-        "Bio_Fuel_Increase_For_Opt_Cost_t": bio_inc_t,
-    })
-
-res_df = pd.DataFrame(rows)
-res_df = res_df[[
-    "Year",
-    "GFI (g/MJ)",
-    "GFI_Deficit_Surplus_tCO2eq",
-    "GFI_Tier_1_Cost_USD",
-    "GFI_Tier_2_Cost_USD",
-    "GFI_Benefit_USD",
-    "Regulatory_Cost_USD",
-    "Premium_Fuel_Cost_USD",
-    "Total_Cost_USD",
-    red_col_name,
-    "Bio_Fuel_Increase_For_Opt_Cost_t",
-]]
-
-st.subheader("Per-Year Results (2028–2035)")
-st.dataframe(
-    res_df.style.format({
-        "GFI (g/MJ)": "{:.3f}",
-        "GFI_Deficit_Surplus_tCO2eq": "{:.3f}",
-        "GFI_Tier_1_Cost_USD": "{:,.0f}",
-        "GFI_Tier_2_Cost_USD": "{:,.0f}",
-        "GFI_Benefit_USD": "{:,.0f}",
-        "Regulatory_Cost_USD": "{:,.0f}",
-        "Premium_Fuel_Cost_USD": "{:,.0f}",
-        "Total_Cost_USD": "{:,.0f}",
-        red_col_name: "{:.3f}",
-        "Bio_Fuel_Increase_For_Opt_Cost_t": "{:.3f}",
-    }),
-    use_container_width=True, height=360
-)
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Compact bar charts
-# ──────────────────────────────────────────────────────────────────────────────
-def bar_chart(title: str, ycol: str):
-    fmt_map = {
-        "GFI_Deficit_Surplus_tCO2eq": ",.1f",
-        "Regulatory_Cost_USD": ",.0f",
-        "Premium_Fuel_Cost_USD": ",.0f",
-        "Total_Cost_USD": ",.0f",
-        "GFI_Tier_1_Cost_USD": ",.0f",
-        "GFI_Tier_2_Cost_USD": ",.0f",
-        "GFI_Benefit_USD": ",.0f",
-    }
-    textfmt = fmt_map.get(ycol, ",.2f")
-
-    figb = px.bar(res_df, x="Year", y=ycol, title=title, text=ycol)
-    figb.update_traces(
-        texttemplate=f"%{{text:{textfmt}}}",
-        textposition="outside",
-        cliponaxis=False,
-        outsidetextfont=dict(size=13, family="Arial Black")
-    )
-    figb.update_layout(
-        height=210,
-        margin=dict(l=4, r=4, t=24, b=4),
-        bargap=0.15,
-        bargroupgap=0.05,
-        showlegend=False,
-        xaxis=dict(tickmode="array", tickvals=YEARS, tickfont=dict(size=10)),
-        yaxis=dict(title=None, tickfont=dict(size=10)),
-        uniformtext_minsize=9,
-        uniformtext_mode="hide"
-    )
-    yvals = res_df[ycol].astype(float)
-    if not yvals.empty:
-        ymax = float(yvals.max())
-        ymin = float(yvals.min())
-        pad_up = 0.10 * abs(ymax) if ymax != 0 else 1.0
-        pad_dn = 0.10 * abs(ymin) if ymin != 0 else 0.0
-        if ymax != ymin:
-            figb.update_yaxes(range=[ymin - pad_dn, ymax + pad_up])
-
-    st.plotly_chart(figb, use_container_width=True)
-
-c1, c2 = st.columns(2)
-with c1:
-    bar_chart("GFI Deficit/Surplus [tCO₂e]", "GFI_Deficit_Surplus_tCO2eq")
-with c2:
-    bar_chart("Regulatory Cost [USD]", "Regulatory_Cost_USD")
-
-c3, c4 = st.columns(2)
-with c3:
-    bar_chart("Premium Fuel Cost [USD]", "Premium_Fuel_Cost_USD")
-with c4:
-    bar_chart("Total Cost [USD]", "Total_Cost_USD")
-
-c5, c6 = st.columns(2)
-with c5:
-    bar_chart("Tier 1 Cost [USD]", "GFI_Tier_1_Cost_USD")
-with c6:
-    bar_chart("Tier 2 Cost [USD]", "GFI_Tier_2_Cost_USD")
-
-bar_chart("Benefit [USD] (negative = credit)", "GFI_Benefit_USD")
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Download Excel
-# ──────────────────────────────────────────────────────────────────────────────
+# Download results
 buf = io.BytesIO()
 with pd.ExcelWriter(buf, engine="openpyxl") as xw:
-    pd.DataFrame({
-        "Parameter": [
-            "HFO_t","LFO_t","MDO_t","BIO_t",
-            "WtW_HFO","WtW_LFO","WtW_MDO","WtW_BIO",
-            "LCV_HFO","LCV_LFO","LCV_MDO","LCV_BIO",
-            "Premium (Bio − Selected Fuel)","Selected fuel to reduce"
-        ],
-        "Value": [
-            HFO_t,LFO_t,MDO_t,BIO_t,
-            WtW_HFO,WtW_LFO,WtW_MDO,WtW_BIO,
-            LCV_HFO,LCV_LFO,LCV_MDO,LCV_BIO,
-            PREMIUM, reduce_choice
-        ],
-        "Units": [
-            "t","t","t","t",
-            "g/MJ","g/MJ","g/MJ","g/MJ",
-            "MJ/t","MJ/t","MJ/t","MJ/t",
-            "USD/t","—"
-        ],
-    }).to_excel(xw, sheet_name="Inputs", index=False)
-    res_df.to_excel(xw, sheet_name="Results_2028_2035", index=False)
-
+    fuels_df.to_excel(xw, sheet_name="Fuels_Input", index=False)
+    pd.DataFrame(electricity).to_excel(xw, sheet_name="Electricity_OPS", header=False)
+    details.to_excel(xw, sheet_name="Results", index=False)
 st.download_button(
-    label="Download results (Excel)",
+    "Download Excel",
     data=buf.getvalue(),
-    file_name="Fuel_EU_Calculator.xlsx",
+    file_name=f"FuelEU_Cost_{year}.xlsx",
     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
 )
 
-st.caption("© 2025 — Single-vessel GFI optimizer. Initial costs shown; optimization reports deltas (selected fuel reduction & BIO increase).")
+st.caption("© 2025 — Planning tool for FuelEU Maritime. Always align inputs with your verifier’s guidance and THETIS-MRV records.")
