@@ -90,7 +90,7 @@ st.set_page_config(page_title="FuelEU Maritime Calculator", layout="wide")
 st.title("FuelEU Maritime — GHG Intensity & Cost (Simplified)")
 st.caption("Period: 2025–2050 • Limits derived from 2020 baseline 91.16 gCO₂e/MJ • WtW basis • Prices in EUR")
 
-# Sidebar — all inputs
+# Sidebar — all inputs, rearranged: Masses → LCVs → WtWs
 with st.sidebar:
     st.header("Inputs")
     voyage_type = st.radio(
@@ -100,22 +100,26 @@ with st.sidebar:
     )
     scope_factor = 1.0 if "Intra" in voyage_type else 0.5
 
-    st.markdown("**Fuel Quantities & Factors**")
-    HSFO_t = st.number_input("HSFO mass [t]", min_value=0.0, value=float(_get(DEFAULTS, "HSFO_t", 5000.0)), step=100.0, format="%.2f")
-    WtW_HSFO = st.number_input("HSFO WtW [gCO₂e/MJ]", min_value=0.0, value=float(_get(DEFAULTS, "WtW_HSFO", 92.78)), step=0.10, format="%.2f")
-    LCV_HSFO = st.number_input("HSFO LCV [MJ/ton]", min_value=0.0, value=float(_get(DEFAULTS, "LCV_HSFO", 40200.0)), step=100.0, format="%.2f")
+    # Masses
+    st.markdown("**Masses [t]**")
+    HSFO_t = st.number_input("HSFO [t]", min_value=0.0, value=float(_get(DEFAULTS, "HSFO_t", 5000.0)), step=100.0, format="%.2f")
+    LFO_t  = st.number_input("LFO [t]",  min_value=0.0, value=float(_get(DEFAULTS, "LFO_t", 0.0)),    step=50.0,  format="%.2f")
+    MGO_t  = st.number_input("MGO [t]",  min_value=0.0, value=float(_get(DEFAULTS, "MGO_t", 0.0)),    step=50.0,  format="%.2f")
+    BIO_t  = st.number_input("BIO [t]",  min_value=0.0, value=float(_get(DEFAULTS, "BIO_t", 0.0)),    step=50.0,  format="%.2f")
 
-    LFO_t = st.number_input("LFO mass [t]", min_value=0.0, value=float(_get(DEFAULTS, "LFO_t", 0.0)), step=50.0, format="%.2f")
-    WtW_LFO = st.number_input("LFO WtW [gCO₂e/MJ]", min_value=0.0, value=float(_get(DEFAULTS, "WtW_LFO", 92.00)), step=0.10, format="%.2f")
-    LCV_LFO = st.number_input("LFO LCV [MJ/ton]", min_value=0.0, value=float(_get(DEFAULTS, "LCV_LFO", 42700.0)), step=100.0, format="%.2f")
+    # LCVs
+    st.markdown("**LCVs [MJ/ton]**")
+    LCV_HSFO = st.number_input("HSFO LCV", min_value=0.0, value=float(_get(DEFAULTS, "LCV_HSFO", 40200.0)), step=100.0, format="%.2f")
+    LCV_LFO  = st.number_input("LFO LCV",  min_value=0.0, value=float(_get(DEFAULTS, "LCV_LFO", 42700.0)),  step=100.0, format="%.2f")
+    LCV_MGO  = st.number_input("MGO LCV",  min_value=0.0, value=float(_get(DEFAULTS, "LCV_MGO", 42700.0)),  step=100.0, format="%.2f")
+    LCV_BIO  = st.number_input("BIO LCV",  min_value=0.0, value=float(_get(DEFAULTS, "LCV_BIO", 38000.0)),  step=100.0, format="%.2f")
 
-    MGO_t = st.number_input("MGO mass [t]", min_value=0.0, value=float(_get(DEFAULTS, "MGO_t", 0.0)), step=50.0, format="%.2f")
-    WtW_MGO = st.number_input("MGO WtW [gCO₂e/MJ]", min_value=0.0, value=float(_get(DEFAULTS, "WtW_MGO", 93.93)), step=0.10, format="%.2f")
-    LCV_MGO = st.number_input("MGO LCV [MJ/ton]", min_value=0.0, value=float(_get(DEFAULTS, "LCV_MGO", 42700.0)), step=100.0, format="%.2f")
-
-    BIO_t = st.number_input("BIO mass [t]", min_value=0.0, value=float(_get(DEFAULTS, "BIO_t", 0.0)), step=50.0, format="%.2f")
-    WtW_BIO = st.number_input("BIO WtW [gCO₂e/MJ]", min_value=0.0, value=float(_get(DEFAULTS, "WtW_BIO", 70.0)), step=0.10, format="%.2f")
-    LCV_BIO = st.number_input("BIO LCV [MJ/ton]", min_value=0.0, value=float(_get(DEFAULTS, "LCV_BIO", 38000.0)), step=100.0, format="%.2f")
+    # WtWs
+    st.markdown("**WtW intensities [gCO₂e/MJ]**")
+    WtW_HSFO = st.number_input("HSFO WtW", min_value=0.0, value=float(_get(DEFAULTS, "WtW_HSFO", 92.78)), step=0.10, format="%.2f")
+    WtW_LFO  = st.number_input("LFO WtW",  min_value=0.0, value=float(_get(DEFAULTS, "WtW_LFO", 92.00)),   step=0.10, format="%.2f")
+    WtW_MGO  = st.number_input("MGO WtW",  min_value=0.0, value=float(_get(DEFAULTS, "WtW_MGO", 93.93)),   step=0.10, format="%.2f")
+    WtW_BIO  = st.number_input("BIO WtW",  min_value=0.0, value=float(_get(DEFAULTS, "WtW_BIO", 70.0)),    step=0.10, format="%.2f")
 
     st.markdown("**Compliance Market**")
     credit_price_eur_per_vlsfo_t = st.number_input(
@@ -137,10 +141,9 @@ with st.sidebar:
             "voyage_type": voyage_type,
             "credit_price_eur_per_vlsfo_t": credit_price_eur_per_vlsfo_t,
             "consecutive_deficit_years": consecutive_deficit_years,
-            "HSFO_t": HSFO_t, "WtW_HSFO": WtW_HSFO, "LCV_HSFO": LCV_HSFO,
-            "LFO_t": LFO_t, "WtW_LFO": WtW_LFO, "LCV_LFO": LCV_LFO,
-            "MGO_t": MGO_t, "WtW_MGO": WtW_MGO, "LCV_MGO": LCV_MGO,
-            "BIO_t": BIO_t, "WtW_BIO": WtW_BIO, "LCV_BIO": LCV_BIO,
+            "HSFO_t": HSFO_t, "LFO_t": LFO_t, "MGO_t": MGO_t, "BIO_t": BIO_t,
+            "LCV_HSFO": LCV_HSFO, "LCV_LFO": LCV_LFO, "LCV_MGO": LCV_MGO, "LCV_BIO": LCV_BIO,
+            "WtW_HSFO": WtW_HSFO, "WtW_LFO": WtW_LFO, "WtW_MGO": WtW_MGO, "WtW_BIO": WtW_BIO,
         }
         try:
             with open(DEFAULTS_PATH, "w", encoding="utf-8") as f:
@@ -200,8 +203,6 @@ st.subheader("Emissions (tCO₂e) — per year (considered scope)")
 st.dataframe(df_emis, use_container_width=True)
 
 penalties_eur, credits_eur, net_eur, cb_t = [], [], [], []
-multiplier = 1.0 + (max(int(DEFAULTS.get("consecutive_deficit_years", 1)), 1) - 1)/10.0
-# Use current sidebar value for multiplier:
 multiplier = 1.0 + (max(int(consecutive_deficit_years), 1) - 1)/10.0
 
 for _, row in LIMITS_DF.iterrows():
