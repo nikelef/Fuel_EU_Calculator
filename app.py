@@ -9,10 +9,10 @@
 #   • Intra‑EU: 100% of energy counts
 #   • Extra‑EU: 50% of energy counts
 #
-# Cost model (initial, EUR‑only):
-#   • Premium [EUR/ton] = price(BIO) − price(selected fuel)
-#   • Base price of the selected (replaced) fuel [EUR/ton] is required
-#     to compute energy‑equivalent cost deltas when LCVs differ.
+# Cost model (initial):
+#   • Premium [USD/ton] = price(BIO) − price(selected fuel)
+#   • Base price of the selected (replaced) fuel [USD/ton] is needed to
+#     compute energy‑equivalent cost deltas.
 #   • FuelEU penalty per Annex IV simplified formula:
 #       Penalty(€) = max(0, −CB) / (GHG_actual * 41,000) * 2,400
 #     where CB (gCO2e) = (Target − Actual) * Energy_MJ_in_scope.
@@ -20,7 +20,7 @@
 #
 # References:
 #   • GHG intensity baseline (2020): 91.16 gCO2e/MJ (EU FuelEU Maritime)
-#   • Reduction steps: 2% (2025‑2029), 6.0% (2030‑2034), 14.5% (2035‑2039),
+#   • Reduction steps: 2% (2025‑2029), 6% (2030‑2034), 14.5% (2035‑2039),
 #     31% (2040‑2044), 62% (2045‑2049), 80% (2050).
 #
 from __future__ import annotations
@@ -60,9 +60,15 @@ LIMITS_DF = limits_by_year()
 # ──────────────────────────────────────────────────────────────────────────────
 # Helpers
 # ──────────────────────────────────────────────────────────────────────────────
+def safe_float(x, default=0.0):
+    try:
+        return float(x)
+    except Exception:
+        return default
+
 def compute_energy_MJ(mass_t: float, lcv_MJ_per_t: float) -> float:
-    mass_t = max(float(mass_t), 0.0)
-    lcv = max(float(lcv_MJ_per_t), 0.0)
+    mass_t = max(mass_t, 0.0)
+    lcv = max(lcv_MJ_per_t, 0.0)
     return mass_t * lcv
 
 def compute_mix_intensity_g_per_MJ(energies_MJ: dict, wtw_g_per_MJ: dict) -> float:
@@ -71,7 +77,7 @@ def compute_mix_intensity_g_per_MJ(energies_MJ: dict, wtw_g_per_MJ: dict) -> flo
         return 0.0
     num = 0.0
     for k, E in energies_MJ.items():
-        num += E * max(float(wtw_g_per_MJ.get(k, 0.0)), 0.0)
+        num += E * max(wtw_g_per_MJ.get(k, 0.0), 0.0)
     return num / E_total
 
 def penalty_eur_per_year(g_actual: float, g_target: float, E_scope_MJ: float) -> float:
@@ -99,27 +105,25 @@ def credit_eur_per_year(g_actual: float, g_target: float, E_scope_MJ: float, cre
         return 0.0
     return (CB_g) / (g_actual * 41000.0) * credit_price_eur_per_vlsfo_t
 
-def premium_cost_delta_eur(mass_bio_t: float,
+def premium_cost_delta_usd(mass_bio_t: float,
                            lcv_bio_MJ_per_t: float,
                            lcv_repl_MJ_per_t: float,
-                           base_price_repl_eur_per_t: float,
-                           premium_eur_per_t: float) -> tuple[float, float]:
+                           base_price_repl_usd_per_t: float,
+                           premium_usd_per_t: float) -> float:
     """
     Energy‑equivalent delta vs. using the replaced fuel for the energy that BIO supplies.
       price_bio = base_price_repl + premium
       E_bio = mass_bio * LCV_bio
-      tons_repl_equiv = E_bio / LCV_repl   (ensures *energy constant*)
-      Δcost = price_bio * mass_bio  −  base_price_repl * tons_repl_equiv   [EUR]
-    Returns (delta_eur, tons_repl_equiv).
+      tons_repl_equiv = E_bio / LCV_repl
+      Δcost = price_bio * mass_bio  −  base_price_repl * tons_repl_equiv
     """
-    mass_bio_t = max(float(mass_bio_t), 0.0)
-    E_bio = mass_bio_t * max(float(lcv_bio_MJ_per_t), 0.0)
+    mass_bio_t = max(mass_bio_t, 0.0)
+    E_bio = mass_bio_t * max(lcv_bio_MJ_per_t, 0.0)
     if E_bio <= 0 or lcv_repl_MJ_per_t <= 0:
-        return 0.0, 0.0
-    t_repl_eq = E_bio / float(lcv_repl_MJ_per_t)
-    price_bio = max(float(base_price_repl_eur_per_t), 0.0) + max(float(premium_eur_per_t), 0.0)
-    delta = price_bio * mass_bio_t - max(float(base_price_repl_eur_per_t), 0.0) * t_repl_eq
-    return float(delta), float(t_repl_eq)
+        return 0.0
+    t_repl_eq = E_bio / lcv_repl_MJ_per_t
+    price_bio = max(base_price_repl_usd_per_t, 0.0) + max(premium_usd_per_t, 0.0)
+    return price_bio * mass_bio_t - max(base_price_repl_usd_per_t, 0.0) * t_repl_eq
 
 # ──────────────────────────────────────────────────────────────────────────────
 # UI
@@ -127,22 +131,21 @@ def premium_cost_delta_eur(mass_bio_t: float,
 st.set_page_config(page_title="FuelEU Maritime Calculator", layout="wide")
 
 st.title("FuelEU Maritime — GHG Intensity & Cost (First Cut)")
-st.caption("Period: 2025–2050 • Limits derived from 2020 baseline 91.16 gCO₂e/MJ • WtW basis • Prices in EUR")
+st.caption("Period: 2025–2050 • Limits derived from 2020 baseline 91.16 gCO₂e/MJ • WtW basis")
 
-# Sidebar — voyage & compliance parameters
-st.sidebar.header("Voyage & Compliance")
+# Sidebar — voyage & economics
+st.sidebar.header("Voyage & Economics")
 voyage_type = st.sidebar.radio("Voyage scope", ["Intra‑EU (100%)", "Extra‑EU (50%)"], index=0)
 scope_factor = 1.0 if "Intra" in voyage_type else 0.5
 
-st.sidebar.subheader("Compliance Market Assumptions")
+replaced_fuel = st.sidebar.selectbox("Fuel to be **replaced** by BIO", ["HSFO", "LFO", "MGO"], index=0)
+premium_usd_per_t = st.sidebar.number_input("Premium (USD/ton) = price(BIO) − price(selected fuel)", min_value=0.0, value=300.0, step=10.0)
+base_price_repl_usd_per_t = st.sidebar.number_input(f"Base price of selected fuel ({replaced_fuel}) [USD/ton]", min_value=0.0, value=600.0, step=10.0)
+
+st.sidebar.subheader("Compliance € & FX")
+eur_to_usd = st.sidebar.number_input("EUR→USD FX (for display)", min_value=0.5, max_value=2.0, value=1.07, step=0.01)
 credit_price_eur_per_vlsfo_t = st.sidebar.number_input("Assumed **credit** price (€/VLSFO‑eq t)", min_value=0.0, value=0.0, step=50.0)
 consecutive_deficit_years = int(st.sidebar.number_input("Consecutive deficit years (n)", min_value=1, value=1, step=1))
-
-# Sidebar — replacement settings (BIO vs selected fuel)
-st.sidebar.header("Replacement Settings (Energy‑Neutral)")
-replaced_fuel = st.sidebar.selectbox("Fuel to be **replaced** by BIO", ["HSFO", "LFO", "MGO"], index=0)
-premium_eur_per_t = st.sidebar.number_input("Premium (EUR/ton) = price(BIO) − price(selected fuel)", min_value=0.0, value=280.0, step=10.0)
-base_price_repl_eur_per_t = st.sidebar.number_input(f"Base price of selected fuel ({replaced_fuel}) [EUR/ton]", min_value=0.0, value=550.0, step=10.0)
 
 # Main inputs — fuels
 st.header("Fuel Inputs")
@@ -178,35 +181,18 @@ wtw = {"HSFO": WtW_HSFO, "LFO": WtW_LFO, "MGO": WtW_MGO, "BIO": WtW_BIO}
 g_actual = compute_mix_intensity_g_per_MJ(energies, wtw)
 tco2eq_total = (g_actual * E_scope_MJ) / 1e6  # tCO2e (considered scope)
 
-# Premium economics (EUR) using energy‑equivalent baseline vs replaced fuel for BIO energy
+# Premium economics (USD) using energy‑equivalent baseline vs replaced fuel for BIO energy
 lcv_map = {"HSFO": LCV_HSFO, "LFO": LCV_LFO, "MGO": LCV_MGO}
-prem_delta_eur, t_repl_eq = premium_cost_delta_eur(
+prem_delta_usd = premium_cost_delta_usd(
     mass_bio_t=BIO_t,
     lcv_bio_MJ_per_t=LCV_BIO,
     lcv_repl_MJ_per_t=max(lcv_map.get(replaced_fuel, 0.0), 0.0),
-    base_price_repl_eur_per_t=base_price_repl_eur_per_t,
-    premium_eur_per_t=premium_eur_per_t,
+    base_price_repl_usd_per_t=base_price_repl_usd_per_t,
+    premium_usd_per_t=premium_usd_per_t,
 )
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Premium Economics — TOP SECTION
-# ──────────────────────────────────────────────────────────────────────────────
-st.header("Premium Economics (energy‑equivalent comparison)")
-colA, colB, colC, colD = st.columns(4)
-colA.metric("BIO mass [t]", f"{BIO_t:,.2f}")
-colB.metric(f"Energy from BIO [MJ]", f"{energies['BIO']:,.0f}")
-colC.metric(f"Replaced {replaced_fuel} [t] (energy‑neutral)", f"{t_repl_eq:,.2f}")
-colD.metric("Δ Cost vs replaced fuel [€]", f"{prem_delta_eur:,.0f}")
-
-st.info(
-    f"Energy neutrality is enforced via **t_replaced = (BIO_t × LCV_BIO) / LCV_{replaced_fuel}**. "
-    f"Premium is defined per your spec: **Premium = Price(BIO) − Price({replaced_fuel}) [€/t]**. "
-    f"The base price of {replaced_fuel} is required to value the **energy‑equivalent tonnage** it would have supplied "
-    f"(because LCVs differ)."
-)
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Plot — GHG Intensity vs Limit
+# Plots
 # ──────────────────────────────────────────────────────────────────────────────
 st.header("GHG Intensity vs. FuelEU Limit (2025–2050)")
 
@@ -289,6 +275,20 @@ df_cost = pd.DataFrame({
 })
 st.subheader("FuelEU: Cost (Penalty) or Benefit (Credit) — per year")
 st.dataframe(df_cost, use_container_width=True)
+
+# Premium economics summary
+st.subheader("Premium Economics (energy‑equivalent comparison)")
+colA, colB, colC = st.columns(3)
+colA.metric("Total Energy (all fuels) [MJ]", f"{E_total_MJ:,.0f}")
+colB.metric("Total Energy Considered [MJ]", f"{E_scope_MJ:,.0f}", help="Voyage scope applied (100% or 50%)")
+colC.metric("GHG Intensity (mix) [gCO₂e/MJ]", f"{g_actual:,.2f}")
+
+st.info(
+    f"Assuming BIO replaces **{replaced_fuel}** on an energy‑equivalent basis, "
+    f"and Premium = {premium_usd_per_t:.0f} USD/ton over a base {replaced_fuel} price of "
+    f"{base_price_repl_usd_per_t:.0f} USD/ton, the **cost delta** is "
+    f"{prem_delta_usd:,.0f} USD for the BIO energy actually used."
+)
 
 # Optional CSV download
 st.download_button(
