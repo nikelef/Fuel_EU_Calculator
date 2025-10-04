@@ -78,7 +78,6 @@ def penalty_eur_per_year(g_actual: float, g_target: float, E_scope_MJ: float) ->
     CB_g = (g_target - g_actual) * E_scope_MJ
     if CB_g >= 0:
         return 0.0
-    # Convert gCO2e balance to VLSFO-eq tons (divide by g/MJ * MJ/t)
     return (-CB_g) / (g_actual * 41000.0) * 2400.0
 
 def credit_eur_per_year(g_actual: float, g_target: float, E_scope_MJ: float, credit_price_eur_per_vlsfo_t: float) -> float:
@@ -97,17 +96,31 @@ st.set_page_config(page_title="FuelEU Maritime Calculator", layout="wide")
 st.title("FuelEU Maritime — GHG Intensity & Cost (Simplified)")
 st.caption("Period: 2025–2050 • Limits derived from 2020 baseline 91.16 gCO₂e/MJ • WtW basis • Prices in EUR")
 
-# Sidebar — all inputs, arranged two per row with smaller boxes
+# Helper: float inputs without +/- steppers (use text inputs), clamp to ≥ min_value
+def _float_text_input(label: str, default_val: float, key: str, min_value: float = 0.0, fmt: str = "{:.2f}") -> float:
+    raw = st.text_input(label, value=fmt.format(float(default_val)), key=key)
+    # allow commas as thousands separators
+    try:
+        val = float(str(raw).replace(",", ""))
+    except Exception:
+        val = float(default_val)
+    if val < min_value:
+        val = min_value
+    return val
+
+# Sidebar — all inputs, arranged two per row with smaller boxes; steppers only on "Consecutive deficit years"
 with st.sidebar:
     st.header("Inputs")
 
-    # Make number inputs visually smaller in the sidebar
+    # Make the inputs visually smaller
     st.markdown(
         """
         <style>
-        section[data-testid="stSidebar"] [data-testid="stNumberInput"] input {
+        section[data-testid="stSidebar"] input[type="text"],
+        section[data-testid="stSidebar"] input[type="number"]{
             padding: 0.25rem 0.5rem;
             min-height: 2rem;
+            height: 2rem;
         }
         </style>
         """,
@@ -125,52 +138,54 @@ with st.sidebar:
     st.markdown("**Masses [t]**")
     m1, m2 = st.columns(2)
     with m1:
-        HSFO_t = st.number_input("HSFO [t]", min_value=0.0, value=float(_get(DEFAULTS, "HSFO_t", 5000.0)), step=100.0, format="%.2f")
+        HSFO_t = _float_text_input("HSFO [t]", _get(DEFAULTS, "HSFO_t", 5000.0), key="HSFO_t", min_value=0.0)
     with m2:
-        LFO_t = st.number_input("LFO [t]", min_value=0.0, value=float(_get(DEFAULTS, "LFO_t", 0.0)), step=50.0, format="%.2f")
+        LFO_t = _float_text_input("LFO [t]", _get(DEFAULTS, "LFO_t", 0.0), key="LFO_t", min_value=0.0)
     m3, m4 = st.columns(2)
     with m3:
-        MGO_t = st.number_input("MGO [t]", min_value=0.0, value=float(_get(DEFAULTS, "MGO_t", 0.0)), step=50.0, format="%.2f")
+        MGO_t = _float_text_input("MGO [t]", _get(DEFAULTS, "MGO_t", 0.0), key="MGO_t", min_value=0.0)
     with m4:
-        BIO_t = st.number_input("BIO [t]", min_value=0.0, value=float(_get(DEFAULTS, "BIO_t", 0.0)), step=50.0, format="%.2f")
+        BIO_t = _float_text_input("BIO [t]", _get(DEFAULTS, "BIO_t", 0.0), key="BIO_t", min_value=0.0)
 
     # LCVs
     st.markdown("**LCVs [MJ/ton]**")
     l1, l2 = st.columns(2)
     with l1:
-        LCV_HSFO = st.number_input("HSFO LCV", min_value=0.0, value=float(_get(DEFAULTS, "LCV_HSFO", 40200.0)), step=100.0, format="%.2f")
+        LCV_HSFO = _float_text_input("HSFO LCV", _get(DEFAULTS, "LCV_HSFO", 40200.0), key="LCV_HSFO", min_value=0.0, fmt="{:.2f}")
     with l2:
-        LCV_LFO = st.number_input("LFO LCV", min_value=0.0, value=float(_get(DEFAULTS, "LCV_LFO", 42700.0)), step=100.0, format="%.2f")
+        LCV_LFO = _float_text_input("LFO LCV", _get(DEFAULTS, "LCV_LFO", 42700.0), key="LCV_LFO", min_value=0.0, fmt="{:.2f}")
     l3, l4 = st.columns(2)
     with l3:
-        LCV_MGO = st.number_input("MGO LCV", min_value=0.0, value=float(_get(DEFAULTS, "LCV_MGO", 42700.0)), step=100.0, format="%.2f")
+        LCV_MGO = _float_text_input("MGO LCV", _get(DEFAULTS, "LCV_MGO", 42700.0), key="LCV_MGO", min_value=0.0, fmt="{:.2f}")
     with l4:
-        LCV_BIO = st.number_input("BIO LCV", min_value=0.0, value=float(_get(DEFAULTS, "LCV_BIO", 38000.0)), step=100.0, format="%.2f")
+        LCV_BIO = _float_text_input("BIO LCV", _get(DEFAULTS, "LCV_BIO", 38000.0), key="LCV_BIO", min_value=0.0, fmt="{:.2f}")
 
     # WtWs
     st.markdown("**WtW intensities [gCO₂e/MJ]**")
     w1, w2 = st.columns(2)
     with w1:
-        WtW_HSFO = st.number_input("HSFO WtW", min_value=0.0, value=float(_get(DEFAULTS, "WtW_HSFO", 92.78)), step=0.10, format="%.2f")
+        WtW_HSFO = _float_text_input("HSFO WtW", _get(DEFAULTS, "WtW_HSFO", 92.78), key="WtW_HSFO", min_value=0.0, fmt="{:.2f}")
     with w2:
-        WtW_LFO = st.number_input("LFO WtW", min_value=0.0, value=float(_get(DEFAULTS, "WtW_LFO", 92.00)), step=0.10, format="%.2f")
+        WtW_LFO = _float_text_input("LFO WtW", _get(DEFAULTS, "WtW_LFO", 92.00), key="WtW_LFO", min_value=0.0, fmt="{:.2f}")
     w3, w4 = st.columns(2)
     with w3:
-        WtW_MGO = st.number_input("MGO WtW", min_value=0.0, value=float(_get(DEFAULTS, "WtW_MGO", 93.93)), step=0.10, format="%.2f")
+        WtW_MGO = _float_text_input("MGO WtW", _get(DEFAULTS, "WtW_MGO", 93.93), key="WtW_MGO", min_value=0.0, fmt="{:.2f}")
     with w4:
-        WtW_BIO = st.number_input("BIO WtW", min_value=0.0, value=float(_get(DEFAULTS, "WtW_BIO", 70.0)), step=0.10, format="%.2f")
+        WtW_BIO = _float_text_input("BIO WtW", _get(DEFAULTS, "WtW_BIO", 70.0), key="WtW_BIO", min_value=0.0, fmt="{:.2f}")
 
     # Compliance Market
     st.markdown("**Compliance Market**")
     c1, c2 = st.columns(2)
     with c1:
-        credit_price_eur_per_vlsfo_t = st.number_input(
+        credit_price_eur_per_vlsfo_t = _float_text_input(
             "Credit price (€/VLSFO-eq t)",
+            _get(DEFAULTS, "credit_price_eur_per_vlsfo_t", 0.0),
+            key="credit_price_eur_per_vlsfo_t",
             min_value=0.0,
-            value=float(_get(DEFAULTS, "credit_price_eur_per_vlsfo_t", 0.0)),
-            step=50.0,
+            fmt="{:.2f}",
         )
     with c2:
+        # Keep steppers ONLY here
         consecutive_deficit_years = int(
             st.number_input(
                 "Consecutive deficit years (n)",
@@ -269,7 +284,7 @@ df_cost = pd.DataFrame(
     }
 )
 
-# Merge all into one table (excluding Delta_vs_Limit)
+# Merge all into one table
 df_results = LIMITS_DF[["Year", "Reduction_%", "Limit_gCO2e_per_MJ"]].copy()
 df_results["Actual_gCO2e_per_MJ"] = round(g_actual, 2)
 df_results["Emissions_tCO2e"] = round(emissions_tco2e, 3)
