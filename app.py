@@ -89,6 +89,35 @@ def credit_eur_per_year(g_actual: float, g_target: float, E_scope_MJ: float, cre
     return (CB_g) / (g_actual * 41000.0) * credit_price_eur_per_vlsfo_t
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Formatting helpers
+# ──────────────────────────────────────────────────────────────────────────────
+def us2(x: float) -> str:
+    """US-format with thousands commas and 2 decimals."""
+    try:
+        return f"{float(x):,.2f}"
+    except Exception:
+        return x
+
+def parse_us(s: str, default: float = 0.0, min_value: float = 0.0) -> float:
+    try:
+        val = float(str(s).replace(",", ""))
+    except Exception:
+        val = float(default)
+    return max(val, min_value)
+
+def float_text_input(label: str, default_val: float, key: str, min_value: float = 0.0) -> float:
+    """Text input that displays and preserves US formatting with 2 decimals (no +/- steppers)."""
+    if key not in st.session_state:
+        st.session_state[key] = us2(default_val)
+
+    def _normalize():
+        val = parse_us(st.session_state[key], default=default_val, min_value=min_value)
+        st.session_state[key] = us2(val)
+
+    st.text_input(label, value=st.session_state[key], key=key, on_change=_normalize)
+    return parse_us(st.session_state[key], default=default_val, min_value=min_value)
+
+# ──────────────────────────────────────────────────────────────────────────────
 # UI
 # ──────────────────────────────────────────────────────────────────────────────
 st.set_page_config(page_title="FuelEU Maritime Calculator", layout="wide")
@@ -96,23 +125,10 @@ st.set_page_config(page_title="FuelEU Maritime Calculator", layout="wide")
 st.title("FuelEU Maritime — GHG Intensity & Cost (Simplified)")
 st.caption("Period: 2025–2050 • Limits derived from 2020 baseline 91.16 gCO₂e/MJ • WtW basis • Prices in EUR")
 
-# Helper: float inputs without +/- steppers (use text inputs), clamp to ≥ min_value
-def _float_text_input(label: str, default_val: float, key: str, min_value: float = 0.0, fmt: str = "{:.2f}") -> float:
-    raw = st.text_input(label, value=fmt.format(float(default_val)), key=key)
-    # allow commas as thousands separators
-    try:
-        val = float(str(raw).replace(",", ""))
-    except Exception:
-        val = float(default_val)
-    if val < min_value:
-        val = min_value
-    return val
-
-# Sidebar — all inputs, arranged two per row with smaller boxes; steppers only on "Consecutive deficit years"
+# Sidebar — all inputs, two per row, smaller boxes; steppers ONLY on 'Consecutive deficit years'
 with st.sidebar:
     st.header("Inputs")
 
-    # Make the inputs visually smaller
     st.markdown(
         """
         <style>
@@ -138,54 +154,53 @@ with st.sidebar:
     st.markdown("**Masses [t]**")
     m1, m2 = st.columns(2)
     with m1:
-        HSFO_t = _float_text_input("HSFO [t]", _get(DEFAULTS, "HSFO_t", 5000.0), key="HSFO_t", min_value=0.0)
+        HSFO_t = float_text_input("HSFO [t]", _get(DEFAULTS, "HSFO_t", 5_000.0), key="HSFO_t", min_value=0.0)
     with m2:
-        LFO_t = _float_text_input("LFO [t]", _get(DEFAULTS, "LFO_t", 0.0), key="LFO_t", min_value=0.0)
+        LFO_t  = float_text_input("LFO [t]" , _get(DEFAULTS, "LFO_t" , 0.0), key="LFO_t", min_value=0.0)
     m3, m4 = st.columns(2)
     with m3:
-        MGO_t = _float_text_input("MGO [t]", _get(DEFAULTS, "MGO_t", 0.0), key="MGO_t", min_value=0.0)
+        MGO_t  = float_text_input("MGO [t]" , _get(DEFAULTS, "MGO_t" , 0.0), key="MGO_t", min_value=0.0)
     with m4:
-        BIO_t = _float_text_input("BIO [t]", _get(DEFAULTS, "BIO_t", 0.0), key="BIO_t", min_value=0.0)
+        BIO_t  = float_text_input("BIO [t]" , _get(DEFAULTS, "BIO_t" , 0.0), key="BIO_t", min_value=0.0)
 
     # LCVs
     st.markdown("**LCVs [MJ/ton]**")
     l1, l2 = st.columns(2)
     with l1:
-        LCV_HSFO = _float_text_input("HSFO LCV", _get(DEFAULTS, "LCV_HSFO", 40200.0), key="LCV_HSFO", min_value=0.0, fmt="{:.2f}")
+        LCV_HSFO = float_text_input("HSFO LCV", _get(DEFAULTS, "LCV_HSFO", 40_200.0), key="LCV_HSFO", min_value=0.0)
     with l2:
-        LCV_LFO = _float_text_input("LFO LCV", _get(DEFAULTS, "LCV_LFO", 42700.0), key="LCV_LFO", min_value=0.0, fmt="{:.2f}")
+        LCV_LFO  = float_text_input("LFO LCV" , _get(DEFAULTS, "LCV_LFO" , 42_700.0), key="LCV_LFO", min_value=0.0)
     l3, l4 = st.columns(2)
     with l3:
-        LCV_MGO = _float_text_input("MGO LCV", _get(DEFAULTS, "LCV_MGO", 42700.0), key="LCV_MGO", min_value=0.0, fmt="{:.2f}")
+        LCV_MGO  = float_text_input("MGO LCV" , _get(DEFAULTS, "LCV_MGO" , 42_700.0), key="LCV_MGO", min_value=0.0)
     with l4:
-        LCV_BIO = _float_text_input("BIO LCV", _get(DEFAULTS, "LCV_BIO", 38000.0), key="LCV_BIO", min_value=0.0, fmt="{:.2f}")
+        LCV_BIO  = float_text_input("BIO LCV" , _get(DEFAULTS, "LCV_BIO" , 38_000.0), key="LCV_BIO", min_value=0.0)
 
     # WtWs
     st.markdown("**WtW intensities [gCO₂e/MJ]**")
     w1, w2 = st.columns(2)
     with w1:
-        WtW_HSFO = _float_text_input("HSFO WtW", _get(DEFAULTS, "WtW_HSFO", 92.78), key="WtW_HSFO", min_value=0.0, fmt="{:.2f}")
+        WtW_HSFO = float_text_input("HSFO WtW", _get(DEFAULTS, "WtW_HSFO", 92.78), key="WtW_HSFO", min_value=0.0)
     with w2:
-        WtW_LFO = _float_text_input("LFO WtW", _get(DEFAULTS, "WtW_LFO", 92.00), key="WtW_LFO", min_value=0.0, fmt="{:.2f}")
+        WtW_LFO  = float_text_input("LFO WtW" , _get(DEFAULTS, "WtW_LFO" , 92.00), key="WtW_LFO", min_value=0.0)
     w3, w4 = st.columns(2)
     with w3:
-        WtW_MGO = _float_text_input("MGO WtW", _get(DEFAULTS, "WtW_MGO", 93.93), key="WtW_MGO", min_value=0.0, fmt="{:.2f}")
+        WtW_MGO  = float_text_input("MGO WtW" , _get(DEFAULTS, "WtW_MGO" , 93.93), key="WtW_MGO", min_value=0.0)
     with w4:
-        WtW_BIO = _float_text_input("BIO WtW", _get(DEFAULTS, "WtW_BIO", 70.0), key="WtW_BIO", min_value=0.0, fmt="{:.2f}")
+        WtW_BIO  = float_text_input("BIO WtW" , _get(DEFAULTS, "WtW_BIO" , 70.00), key="WtW_BIO", min_value=0.0)
 
     # Compliance Market
     st.markdown("**Compliance Market**")
     c1, c2 = st.columns(2)
     with c1:
-        credit_price_eur_per_vlsfo_t = _float_text_input(
+        credit_price_eur_per_vlsfo_t = float_text_input(
             "Credit price (€/VLSFO-eq t)",
             _get(DEFAULTS, "credit_price_eur_per_vlsfo_t", 0.0),
             key="credit_price_eur_per_vlsfo_t",
             min_value=0.0,
-            fmt="{:.2f}",
         )
     with c2:
-        # Keep steppers ONLY here
+        # Keep +/- steppers ONLY here
         consecutive_deficit_years = int(
             st.number_input(
                 "Consecutive deficit years (n)",
@@ -217,9 +232,9 @@ with st.sidebar:
 # ──────────────────────────────────────────────────────────────────────────────
 energies = {
     "HSFO": compute_energy_MJ(HSFO_t, LCV_HSFO),
-    "LFO": compute_energy_MJ(LFO_t, LCV_LFO),
-    "MGO": compute_energy_MJ(MGO_t, LCV_MGO),
-    "BIO": compute_energy_MJ(BIO_t, LCV_BIO),
+    "LFO":  compute_energy_MJ(LFO_t,  LCV_LFO),
+    "MGO":  compute_energy_MJ(MGO_t,  LCV_MGO),
+    "BIO":  compute_energy_MJ(BIO_t,  LCV_BIO),
 }
 E_total_MJ = sum(energies.values())
 E_scope_MJ = E_total_MJ * (1.0 if "Intra" in voyage_type else 0.5)
@@ -237,22 +252,34 @@ years = LIMITS_DF["Year"].tolist()
 actual_series = [g_actual for _ in years]
 
 fig = go.Figure()
-fig.add_trace(go.Scatter(x=years, y=limit_series, name="FuelEU Limit (step)", mode="lines", line=dict(shape="hv", width=3)))
-fig.add_trace(go.Scatter(x=years, y=actual_series, name="Your Mix (WtW)", mode="lines"))
+fig.add_trace(
+    go.Scatter(
+        x=years, y=limit_series, name="FuelEU Limit (step)",
+        mode="lines", line=dict(shape="hv", width=3),
+        hovertemplate="Year=%{x}<br>Limit=%{y:,.2f} gCO₂e/MJ<extra></extra>"
+    )
+)
+fig.add_trace(
+    go.Scatter(
+        x=years, y=actual_series, name="Your Mix (WtW)", mode="lines",
+        hovertemplate="Year=%{x}<br>Mix=%{y:,.2f} gCO₂e/MJ<extra></extra>"
+    )
+)
 
+fig.update_yaxes(tickformat=",.2f")
 fig.update_layout(
     xaxis_title="Year",
     yaxis_title="GHG Intensity [gCO₂e/MJ]",
     hovermode="x unified",
-    title=f"Total Energy (mix): {E_total_MJ:,.0f} MJ  •  Voyage: {voyage_type}",
+    title=f"Total Energy (mix): {us2(E_total_MJ)} MJ  •  Voyage: {voyage_type}",
     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1.0),
     margin=dict(l=40, r=20, t=80, b=40),
 )
 st.plotly_chart(fig, use_container_width=True)
-st.caption(f"Energy considered for compliance: {E_scope_MJ:,.0f} MJ (scope applied).")
+st.caption(f"Energy considered for compliance: {us2(E_scope_MJ)} MJ (scope applied).")
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Results — single merged table (no Delta_vs_Limit)
+# Results — single merged table (US format, 2 decimals; Year excluded)
 # ──────────────────────────────────────────────────────────────────────────────
 st.header("Results (merged per-year table)")
 
@@ -267,7 +294,7 @@ for _, row in LIMITS_DF.iterrows():
     g_target = float(row["Limit_gCO2e_per_MJ"])
     CB_g = (g_target - g_actual) * E_scope_MJ
     CB_t = CB_g / 1e6
-    cb_t.append(round(CB_t, 3))
+    cb_t.append(CB_t)
     pen = penalty_eur_per_year(g_actual, g_target, E_scope_MJ) * multiplier
     penalties_eur.append(pen)
     cred = credit_eur_per_year(g_actual, g_target, E_scope_MJ, credit_price_eur_per_vlsfo_t)
@@ -278,23 +305,28 @@ df_cost = pd.DataFrame(
     {
         "Year": years,
         "Compliance_Balance_tCO2e": cb_t,
-        "Penalty_EUR": [round(x, 2) for x in penalties_eur],
-        "Credit_EUR": [round(x, 2) for x in credits_eur],
-        "Net_EUR": [round(x, 2) for x in net_eur],
+        "Penalty_EUR": penalties_eur,
+        "Credit_EUR": credits_eur,
+        "Net_EUR": net_eur,
     }
 )
 
-# Merge all into one table
 df_results = LIMITS_DF[["Year", "Reduction_%", "Limit_gCO2e_per_MJ"]].copy()
-df_results["Actual_gCO2e_per_MJ"] = round(g_actual, 2)
-df_results["Emissions_tCO2e"] = round(emissions_tco2e, 3)
+df_results["Actual_gCO2e_per_MJ"] = g_actual
+df_results["Emissions_tCO2e"] = emissions_tco2e
 df_results = df_results.merge(df_cost, on="Year", how="left")
 
-st.dataframe(df_results, use_container_width=True)
+# Create a formatted copy for display & CSV (US format with 2 decimals), excluding Year
+df_fmt = df_results.copy()
+for col in df_fmt.columns:
+    if col != "Year":
+        df_fmt[col] = df_fmt[col].apply(us2)
+
+st.dataframe(df_fmt, use_container_width=True)
 
 st.download_button(
     "Download per-year results (CSV)",
-    data=df_results.to_csv(index=False),
+    data=df_fmt.to_csv(index=False),
     file_name="fueleu_results_2025_2050.csv",
     mime="text/csv",
 )
