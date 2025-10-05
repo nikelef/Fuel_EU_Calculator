@@ -417,3 +417,30 @@ for _, row in LIMITS_DF.iterrows():
 
 df_cost = pd.DataFrame(
     {
+        "Year": years,
+        "Compliance_Balance_tCO2e": cb_t,
+        "Penalty_EUR": penalties_eur,
+        "Credit_EUR": credits_eur,
+        "Net_EUR": net_eur,
+    }
+)
+
+df_results = LIMITS_DF[["Year", "Reduction_%", "Limit_gCO2e_per_MJ"]].copy()
+df_results["Actual_gCO2e_per_MJ"] = g_actual
+df_results["Emissions_tCO2e"] = emissions_tco2e
+df_results = df_results.merge(df_cost, on="Year", how="left")
+
+# Create a formatted copy for display & CSV (US format with 2 decimals), excluding Year
+df_fmt = df_results.copy()
+for col in df_fmt.columns:
+    if col != "Year":
+        df_fmt[col] = df_fmt[col].apply(us2)
+
+st.dataframe(df_fmt, use_container_width=True)
+
+st.download_button(
+    "Download per-year results (CSV)",
+    data=df_fmt.to_csv(index=False),
+    file_name="fueleu_results_2025_2050.csv",
+    mime="text/csv",
+)
