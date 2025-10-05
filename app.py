@@ -1,5 +1,6 @@
 # app.py — FuelEU Maritime Calculator (Simplified, 2025–2050, EUR-only + defaults)
 # Implements Extra-EU rule: “BIO first up to the 50% cap; fossil fills the rest”
+# Adds top-of-page breakdown: Fossil vs BIO (all & in-scope)
 # -------------------------------------------------------------------------------
 from __future__ import annotations
 
@@ -151,21 +152,18 @@ def scoped_energies_for_voyage(energies: Dict[str, float], voyage_type: str) -> 
     - Extra-EU: Only 50% of total counts. BIO is attributed first up to that 50%;
                 the remainder of the scoped half is filled proportionally by HSFO/LFO/MGO.
     """
-    # Ensure all keys exist
     E = {k: float(energies.get(k, 0.0)) for k in ["HSFO", "LFO", "MGO", "BIO"]}
     E_tot = sum(E.values())
 
     if "Extra-EU" in voyage_type:
         E_scope = 0.5 * E_tot
-        # 1) Attribute BIO first (up to the scoped half)
         bio_attr = min(E["BIO"], E_scope)
-        # 2) Fill the remainder with fossil proportionally
         remainder = E_scope - bio_attr
         foss_tot = E["HSFO"] + E["LFO"] + E["MGO"]
         if foss_tot > 0 and remainder > 0:
             hsfo_attr = remainder * (E["HSFO"] / foss_tot)
-            lfo_attr = remainder * (E["LFO"] / foss_tot)
-            mgo_attr = remainder * (E["MGO"] / foss_tot)
+            lfo_attr  = remainder * (E["LFO"]  / foss_tot)
+            mgo_attr  = remainder * (E["MGO"]  / foss_tot)
         else:
             hsfo_attr = lfo_attr = mgo_attr = 0.0
         return {"HSFO": hsfo_attr, "LFO": lfo_attr, "MGO": mgo_attr, "BIO": bio_attr}
@@ -224,12 +222,12 @@ with st.sidebar:
     with m1:
         HSFO_t = float_text_input("HSFO [t]", _get(DEFAULTS, "HSFO_t", 5_000.0), key="HSFO_t", min_value=0.0)
     with m2:
-        LFO_t = float_text_input("LFO [t]", _get(DEFAULTS, "LFO_t", 0.0), key="LFO_t", min_value=0.0)
+        LFO_t  = float_text_input("LFO [t]" , _get(DEFAULTS, "LFO_t" , 0.0), key="LFO_t", min_value=0.0)
     m3, m4 = st.columns(2)
     with m3:
-        MGO_t = float_text_input("MGO [t]", _get(DEFAULTS, "MGO_t", 0.0), key="MGO_t", min_value=0.0)
+        MGO_t  = float_text_input("MGO [t]" , _get(DEFAULTS, "MGO_t" , 0.0), key="MGO_t", min_value=0.0)
     with m4:
-        BIO_t = float_text_input("BIO [t]", _get(DEFAULTS, "BIO_t", 0.0), key="BIO_t", min_value=0.0)
+        BIO_t  = float_text_input("BIO [t]" , _get(DEFAULTS, "BIO_t" , 0.0), key="BIO_t", min_value=0.0)
 
     # LCVs
     st.markdown('<div class="section-title">LCVs [MJ/ton]</div>', unsafe_allow_html=True)
@@ -237,12 +235,12 @@ with st.sidebar:
     with l1:
         LCV_HSFO = float_text_input("HSFO LCV", _get(DEFAULTS, "LCV_HSFO", 40_200.0), key="LCV_HSFO", min_value=0.0)
     with l2:
-        LCV_LFO = float_text_input("LFO LCV", _get(DEFAULTS, "LCV_LFO", 42_700.0), key="LCV_LFO", min_value=0.0)
+        LCV_LFO  = float_text_input("LFO LCV" , _get(DEFAULTS, "LCV_LFO" , 42_700.0), key="LCV_LFO", min_value=0.0)
     l3, l4 = st.columns(2)
     with l3:
-        LCV_MGO = float_text_input("MGO LCV", _get(DEFAULTS, "LCV_MGO", 42_700.0), key="LCV_MGO", min_value=0.0)
+        LCV_MGO  = float_text_input("MGO LCV" , _get(DEFAULTS, "LCV_MGO" , 42_700.0), key="LCV_MGO", min_value=0.0)
     with l4:
-        LCV_BIO = float_text_input("BIO LCV", _get(DEFAULTS, "LCV_BIO", 38_000.0), key="LCV_BIO", min_value=0.0)
+        LCV_BIO  = float_text_input("BIO LCV" , _get(DEFAULTS, "LCV_BIO" , 38_000.0), key="LCV_BIO", min_value=0.0)
 
     # WtWs
     st.markdown('<div class="section-title">WtW intensities [gCO₂e/MJ]</div>', unsafe_allow_html=True)
@@ -250,19 +248,19 @@ with st.sidebar:
     with w1:
         WtW_HSFO = float_text_input("HSFO WtW", _get(DEFAULTS, "WtW_HSFO", 92.78), key="WtW_HSFO", min_value=0.0)
     with w2:
-        WtW_LFO = float_text_input("LFO WtW", _get(DEFAULTS, "WtW_LFO", 92.00), key="WtW_LFO", min_value=0.0)
+        WtW_LFO  = float_text_input("LFO WtW" , _get(DEFAULTS, "WtW_LFO" , 92.00), key="WtW_LFO", min_value=0.0)
     w3, w4 = st.columns(2)
     with w3:
-        WtW_MGO = float_text_input("MGO WtW", _get(DEFAULTS, "WtW_MGO", 93.93), key="WtW_MGO", min_value=0.0)
+        WtW_MGO  = float_text_input("MGO WtW" , _get(DEFAULTS, "WtW_MGO" , 93.93), key="WtW_MGO", min_value=0.0)
     with w4:
-        WtW_BIO = float_text_input("BIO WtW", _get(DEFAULTS, "WtW_BIO", 70.00), key="WtW_BIO", min_value=0.0)
+        WtW_BIO  = float_text_input("BIO WtW" , _get(DEFAULTS, "WtW_BIO" , 70.00), key="WtW_BIO", min_value=0.0)
 
     # ── Preview intensity for €/tCO2e ↔ €/VLSFO-eq t conversions (use scoped energies)
     energies_preview_full = {
         "HSFO": compute_energy_MJ(HSFO_t, LCV_HSFO),
-        "LFO": compute_energy_MJ(LFO_t, LCV_LFO),
-        "MGO": compute_energy_MJ(MGO_t, LCV_MGO),
-        "BIO": compute_energy_MJ(BIO_t, LCV_BIO),
+        "LFO":  compute_energy_MJ(LFO_t,  LCV_LFO),
+        "MGO":  compute_energy_MJ(MGO_t,  LCV_MGO),
+        "BIO":  compute_energy_MJ(BIO_t,  LCV_BIO),
     }
     wtw_preview = {"HSFO": WtW_HSFO, "LFO": WtW_LFO, "MGO": WtW_MGO, "BIO": WtW_BIO}
     energies_preview_scoped = scoped_energies_for_voyage(energies_preview_full, voyage_type)
@@ -354,7 +352,7 @@ with st.sidebar:
         st.text_input("", key="penalty_per_vlsfo_t_str", on_change=_pen_sync_from_vlsfo, placeholder="regulated default")
 
     penalty_price_eur_per_vlsfo_t = parse_us(st.session_state["penalty_per_vlsfo_t_str"], 2_400.0, 0.0)
-    penalty_price_eur_per_tco2e = parse_us(st.session_state["penalty_per_tco2e_str"], 0.0, 0.0)
+    penalty_price_eur_per_tco2e  = parse_us(st.session_state["penalty_per_tco2e_str"],  0.0, 0.0)
 
     # Only steppers here
     st.markdown('<div class="section-title">Other</div>', unsafe_allow_html=True)
@@ -375,18 +373,9 @@ with st.sidebar:
             "credit_price_eur_per_vlsfo_t": credit_price_eur_per_vlsfo_t,
             "penalty_price_eur_per_vlsfo_t": penalty_price_eur_per_vlsfo_t,
             "consecutive_deficit_years": consecutive_deficit_years,
-            "HSFO_t": HSFO_t,
-            "LFO_t": LFO_t,
-            "MGO_t": MGO_t,
-            "BIO_t": BIO_t,
-            "LCV_HSFO": LCV_HSFO,
-            "LCV_LFO": LCV_LFO,
-            "LCV_MGO": LCV_MGO,
-            "LCV_BIO": LCV_BIO,
-            "WtW_HSFO": WtW_HSFO,
-            "WtW_LFO": WtW_LFO,
-            "WtW_MGO": WtW_MGO,
-            "WtW_BIO": WtW_BIO,
+            "HSFO_t": HSFO_t, "LFO_t": LFO_t, "MGO_t": MGO_t, "BIO_t": BIO_t,
+            "LCV_HSFO": LCV_HSFO, "LCV_LFO": LCV_LFO, "LCV_MGO": LCV_MGO, "LCV_BIO": LCV_BIO,
+            "WtW_HSFO": WtW_HSFO, "WtW_LFO": WtW_LFO, "WtW_MGO": WtW_MGO, "WtW_BIO": WtW_BIO,
         }
         try:
             with open(DEFAULTS_PATH, "w", encoding="utf-8") as f:
@@ -400,9 +389,9 @@ with st.sidebar:
 # ──────────────────────────────────────────────────────────────────────────────
 energies_full = {
     "HSFO": compute_energy_MJ(HSFO_t, LCV_HSFO),
-    "LFO": compute_energy_MJ(LFO_t, LCV_LFO),
-    "MGO": compute_energy_MJ(MGO_t, LCV_MGO),
-    "BIO": compute_energy_MJ(BIO_t, LCV_BIO),
+    "LFO":  compute_energy_MJ(LFO_t,  LCV_LFO),
+    "MGO":  compute_energy_MJ(MGO_t,  LCV_MGO),
+    "BIO":  compute_energy_MJ(BIO_t,  LCV_BIO),
 }
 wtw = {"HSFO": WtW_HSFO, "LFO": WtW_LFO, "MGO": WtW_MGO, "BIO": WtW_BIO}
 
@@ -410,6 +399,21 @@ scoped_energies = scoped_energies_for_voyage(energies_full, voyage_type)
 E_total_MJ = sum(energies_full.values())
 E_scope_MJ = sum(scoped_energies.values())
 g_actual = compute_mix_intensity_g_per_MJ(scoped_energies, wtw)  # gCO2e/MJ (in-scope mix)
+
+# ── NEW: top-of-page breakdown of fossil vs BIO (all & in-scope)
+fossil_all_MJ  = energies_full["HSFO"] + energies_full["LFO"] + energies_full["MGO"]
+bio_all_MJ     = energies_full["BIO"]
+fossil_scope_MJ = scoped_energies["HSFO"] + scoped_energies["LFO"] + scoped_energies["MGO"]
+bio_scope_MJ    = scoped_energies["BIO"]
+
+st.subheader("Energy breakdown (MJ)")
+cA, cB, cC, cD, cE, cF = st.columns(6)
+with cA: st.metric("Total energy (all)", f"{us2(E_total_MJ)} MJ")
+with cB: st.metric("In-scope energy", f"{us2(E_scope_MJ)} MJ")
+with cC: st.metric("Fossil — all", f"{us2(fossil_all_MJ)} MJ")
+with cD: st.metric("BIO — all", f"{us2(bio_all_MJ)} MJ")
+with cE: st.metric("Fossil — in scope", f"{us2(fossil_scope_MJ)} MJ")
+with cF: st.metric("BIO — in scope", f"{us2(bio_scope_MJ)} MJ")
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Plot — GHG Intensity vs Limit
@@ -446,9 +450,13 @@ fig.update_layout(
     xaxis_title="Year",
     yaxis_title="GHG Intensity [gCO₂e/MJ]",
     hovermode="x unified",
-    title=f"Total Energy (all): {us2(E_total_MJ)} MJ  •  In-scope Energy: {us2(E_scope_MJ)} MJ  •  Voyage: {voyage_type}",
+    title=(
+        f"Total (all): {us2(E_total_MJ)} MJ • In-scope: {us2(E_scope_MJ)} MJ "
+        f"• Fossil (all/in-scope): {us2(fossil_all_MJ)} / {us2(fossil_scope_MJ)} MJ "
+        f"• BIO (all/in-scope): {us2(bio_all_MJ)} / {us2(bio_scope_MJ)} MJ"
+    ),
     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1.0),
-    margin=dict(l=40, r=20, t=80, b=40),
+    margin=dict(l=40, r=20, t=100, b=40),
 )
 st.plotly_chart(fig, use_container_width=True)
 st.caption(f"Energy considered for compliance (in scope): {us2(E_scope_MJ)} MJ.")
