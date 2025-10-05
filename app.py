@@ -257,7 +257,7 @@ with st.sidebar:
 
     # ── Compliance Market — penalties (two linked inputs; RED-styled; default €2,400/VLSFO-eq t)
     st.markdown("**Compliance Market — Penalties**")
-    st.markdown('<div class="penalty-note">Regulated default. Change only if regulation changes.</div>', unsafe_allow_html=True)
+    #st.markdown('<div class="penalty-note">Regulated default. Change only if regulation changes.</div>', unsafe_allow_html=True)
 
     # Initialize penalty state (defaults)
     if "penalty_per_vlsfo_t_str" not in st.session_state:
