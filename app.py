@@ -125,7 +125,7 @@ st.set_page_config(page_title="FuelEU Maritime Calculator", layout="wide")
 st.title("FuelEU Maritime — GHG Intensity & Cost (Simplified)")
 st.caption("Period: 2025–2050 • Limits derived from 2020 baseline 91.16 gCO₂e/MJ • WtW basis • Prices in EUR")
 
-# Sidebar — all inputs, two per row, smaller boxes; steppers ONLY on 'Consecutive deficit years'
+# Sidebar — inputs
 with st.sidebar:
     st.header("Inputs")
 
@@ -198,61 +198,53 @@ with st.sidebar:
     }
     wtw_preview = {"HSFO": WtW_HSFO, "LFO": WtW_LFO, "MGO": WtW_MGO, "BIO": WtW_BIO}
     g_actual_preview = compute_mix_intensity_g_per_MJ(energies_preview, wtw_preview)
-    factor_vlsfo_per_tco2e = (g_actual_preview * 41_000.0) / 1_000_000.0 if g_actual_preview > 0 else 0.0  # €/tCO2e → €/VLSFO-eq t multiplier
+    factor_vlsfo_per_tco2e = (g_actual_preview * 41_000.0) / 1_000_000.0 if g_actual_preview > 0 else 0.0
+    st.session_state["factor_vlsfo_per_tco2e"] = factor_vlsfo_per_tco2e  # used by callbacks
 
-    # Compliance Market — TWO linked inputs (bidirectional sync via session_state)
+    # ── Compliance Market — TWO linked inputs with safe, callback-based sync
     st.markdown("**Compliance Market**")
 
-    # Initialize session state for the two fields and a sync source flag
-    default_credit_per_tco2e = float(_get(DEFAULTS, "credit_per_tco2e", 200.0))
-    default_credit_per_vlsfo = float(_get(DEFAULTS, "credit_price_eur_per_vlsfo_t", 0.0))
-
-    if "credit_sync_source" not in st.session_state:
-        st.session_state["credit_sync_source"] = "tco2e"  # last edited: 'tco2e' or 'vlsfo'
-
+    # Initialize state strings (US-format) once
     if "credit_per_tco2e_str" not in st.session_state:
-        st.session_state["credit_per_tco2e_str"] = us2(default_credit_per_tco2e)
+        st.session_state["credit_per_tco2e_str"] = us2(float(_get(DEFAULTS, "credit_per_tco2e", 200.0)))
     if "credit_per_vlsfo_t_str" not in st.session_state:
-        st.session_state["credit_per_vlsfo_t_str"] = us2(default_credit_per_vlsfo)
+        st.session_state["credit_per_vlsfo_t_str"] = us2(float(_get(DEFAULTS, "credit_price_eur_per_vlsfo_t", 0.0)))
+    if "credit_sync_guard" not in st.session_state:
+        st.session_state["credit_sync_guard"] = False  # prevents callback ping-pong
 
-    def _mark_tco2e():
-        st.session_state["credit_sync_source"] = "tco2e"
-    def _mark_vlsfo():
-        st.session_state["credit_sync_source"] = "vlsfo"
+    def _sync_from_tco2e():
+        if st.session_state["credit_sync_guard"]:
+            return
+        st.session_state["credit_sync_guard"] = True
+        per_tco2e = parse_us(st.session_state["credit_per_tco2e_str"], 0.0, 0.0)
+        factor = st.session_state.get("factor_vlsfo_per_tco2e", 0.0)
+        per_vlsfo = per_tco2e * factor if factor > 0 else 0.0
+        # normalize both fields
+        st.session_state["credit_per_tco2e_str"] = us2(per_tco2e)
+        st.session_state["credit_per_vlsfo_t_str"] = us2(per_vlsfo)
+        st.session_state["credit_sync_guard"] = False
+
+    def _sync_from_vlsfo():
+        if st.session_state["credit_sync_guard"]:
+            return
+        st.session_state["credit_sync_guard"] = True
+        per_vlsfo = parse_us(st.session_state["credit_per_vlsfo_t_str"], 0.0, 0.0)
+        factor = st.session_state.get("factor_vlsfo_per_tco2e", 0.0)
+        per_tco2e = (per_vlsfo / factor) if factor > 0 else 0.0
+        # normalize both fields
+        st.session_state["credit_per_vlsfo_t_str"] = us2(per_vlsfo)
+        st.session_state["credit_per_tco2e_str"] = us2(per_tco2e)
+        st.session_state["credit_sync_guard"] = False
 
     c1, c2 = st.columns(2)
     with c1:
-        st.text_input(
-            "Credit price €/tCO₂e",
-            key="credit_per_tco2e_str",
-            on_change=_mark_tco2e,
-        )
+        st.text_input("Credit price €/tCO₂e", key="credit_per_tco2e_str", on_change=_sync_from_tco2e)
     with c2:
-        st.text_input(
-            "Credit price €/VLSFO-eq t",
-            key="credit_per_vlsfo_t_str",
-            on_change=_mark_vlsfo,
-        )
+        st.text_input("Credit price €/VLSFO-eq t", key="credit_per_vlsfo_t_str", on_change=_sync_from_vlsfo)
 
-    # Synchronize values according to the last edited field
-    # Convert and rewrite the counterpart with US 2-decimal formatting
-    if factor_vlsfo_per_tco2e > 0:
-        if st.session_state["credit_sync_source"] == "tco2e":
-            _per_tco2e = parse_us(st.session_state["credit_per_tco2e_str"], default_credit_per_tco2e, 0.0)
-            _per_vlsfo = _per_tco2e * factor_vlsfo_per_tco2e
-            st.session_state["credit_per_vlsfo_t_str"] = us2(_per_vlsfo)
-        else:
-            _per_vlsfo = parse_us(st.session_state["credit_per_vlsfo_t_str"], default_credit_per_vlsfo, 0.0)
-            _per_tco2e = (_per_vlsfo / factor_vlsfo_per_tco2e) if factor_vlsfo_per_tco2e > 0 else 0.0
-            st.session_state["credit_per_tco2e_str"] = us2(_per_tco2e)
-    else:
-        # If factor is zero (no energy / undefined intensity), keep both as-is; downstream will treat as 0 where needed
-        _per_tco2e = parse_us(st.session_state["credit_per_tco2e_str"], default_credit_per_tco2e, 0.0)
-        _per_vlsfo = parse_us(st.session_state["credit_per_vlsfo_t_str"], default_credit_per_vlsfo, 0.0)
-
-    # Final numeric values used by the model:
-    credit_per_tco2e = parse_us(st.session_state["credit_per_tco2e_str"], default_credit_per_tco2e, 0.0)
-    credit_price_eur_per_vlsfo_t = parse_us(st.session_state["credit_per_vlsfo_t_str"], default_credit_per_vlsfo, 0.0)
+    # Final numeric values used by the model/results
+    credit_per_tco2e = parse_us(st.session_state["credit_per_tco2e_str"], 0.0, 0.0)
+    credit_price_eur_per_vlsfo_t = parse_us(st.session_state["credit_per_vlsfo_t_str"], 0.0, 0.0)
 
     # Keep +/- steppers ONLY here
     consecutive_deficit_years = int(
@@ -352,7 +344,7 @@ for _, row in LIMITS_DF.iterrows():
     cb_t.append(CB_t)
     pen = penalty_eur_per_year(g_actual, g_target, E_scope_MJ) * multiplier
     penalties_eur.append(pen)
-    cred = credit_eur_per_year(g_actual, g_target, E_scope_MJ, credit_price_eur_per_vlsfo_t)
+    cred = credit_eur_per_year(g_actual, g_target, E_scope_MJ, credit_price_eur_per_vlsfo_t=credit_price_eur_per_vlsfo_t)
     credits_eur.append(cred)
     net_eur.append(cred - pen)
 
