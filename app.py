@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Dict, Any, List
+from typing import Dict, Any
 
 import numpy as np
 import pandas as pd
@@ -17,7 +17,6 @@ import streamlit as st
 BASELINE_2020_GFI = 91.16  # gCO2e/MJ
 DEFAULTS_PATH = ".fueleu_defaults.json"
 
-# Reduction steps (stepwise limits)
 REDUCTION_STEPS = [
     (2025, 2029, 2.0),
     (2030, 2034, 6.0),
@@ -26,7 +25,8 @@ REDUCTION_STEPS = [
     (2045, 2049, 62.0),
     (2050, 2050, 80.0),
 ]
-YEARS: List[int] = list(range(2025, 2051))
+
+YEARS = list(range(2025, 2051))
 
 def limits_by_year() -> pd.DataFrame:
     rows = []
@@ -73,11 +73,6 @@ def compute_mix_intensity_g_per_MJ(energies_MJ: dict, wtw_g_per_MJ: dict) -> flo
     return num / E_total
 
 def penalty_eur_per_year(g_actual: float, g_target: float, E_scope_MJ: float) -> float:
-    """
-    Penalty = deficit converted to VLSFO-equivalent tons × 2,400 €/t.
-    Deficit in grams: CB_g = (g_target - g_actual) * E_scope_MJ  (negative if above limit)
-    VLSFO-eq tons = (-CB_g) / (g_actual [g/MJ] * 41,000 [MJ/t])
-    """
     if E_scope_MJ <= 0 or g_actual <= 0:
         return 0.0
     CB_g = (g_target - g_actual) * E_scope_MJ
@@ -94,9 +89,10 @@ def credit_eur_per_year(g_actual: float, g_target: float, E_scope_MJ: float, cre
     return (CB_g) / (g_actual * 41000.0) * credit_price_eur_per_vlsfo_t
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Formatting helpers (US format with 2 decimals)
+# Formatting helpers
 # ──────────────────────────────────────────────────────────────────────────────
 def us2(x: float) -> str:
+    """US-format with thousands commas and 2 decimals."""
     try:
         return f"{float(x):,.2f}"
     except Exception:
@@ -129,7 +125,7 @@ st.set_page_config(page_title="FuelEU Maritime Calculator", layout="wide")
 st.title("FuelEU Maritime — GHG Intensity & Cost (Simplified)")
 st.caption("Period: 2025–2050 • Limits derived from 2020 baseline 91.16 gCO₂e/MJ • WtW basis • Prices in EUR")
 
-# Sidebar — inputs (two per row, compact). No +/- steppers except for 'Consecutive deficit years'.
+# Sidebar — all inputs, two per row, smaller boxes; steppers ONLY on 'Consecutive deficit years'
 with st.sidebar:
     st.header("Inputs")
 
@@ -180,23 +176,18 @@ with st.sidebar:
     with l4:
         LCV_BIO  = float_text_input("BIO LCV" , _get(DEFAULTS, "LCV_BIO" , 38_000.0), key="LCV_BIO", min_value=0.0)
 
-    # WtWs — AR4 and AR5 (you can keep same values; AR5 will be used from 2026 if toggle is ON)
-    st.markdown("**WtW intensities [gCO₂e/MJ] — AR4 vs AR5**")
-    auto_switch_ar5 = st.checkbox("Apply AR4 in 2025 and AR5 from 2026 onward", value=True)
-
+    # WtWs
+    st.markdown("**WtW intensities [gCO₂e/MJ]**")
     w1, w2 = st.columns(2)
     with w1:
-        st.markdown("_AR4_")
-        WtW_HSFO_AR4 = float_text_input("HSFO WtW (AR4)", _get(DEFAULTS, "WtW_HSFO_AR4", 92.78), key="WtW_HSFO_AR4", min_value=0.0)
-        WtW_LFO_AR4  = float_text_input("LFO WtW (AR4)" , _get(DEFAULTS, "WtW_LFO_AR4" , 92.00), key="WtW_LFO_AR4", min_value=0.0)
-        WtW_MGO_AR4  = float_text_input("MGO WtW (AR4)" , _get(DEFAULTS, "WtW_MGO_AR4" , 93.93), key="WtW_MGO_AR4", min_value=0.0)
-        WtW_BIO_AR4  = float_text_input("BIO WtW (AR4)" , _get(DEFAULTS, "WtW_BIO_AR4" , 70.00), key="WtW_BIO_AR4", min_value=0.0)
+        WtW_HSFO = float_text_input("HSFO WtW", _get(DEFAULTS, "WtW_HSFO", 92.78), key="WtW_HSFO", min_value=0.0)
     with w2:
-        st.markdown("_AR5_")
-        WtW_HSFO_AR5 = float_text_input("HSFO WtW (AR5)", _get(DEFAULTS, "WtW_HSFO_AR5", 92.78), key="WtW_HSFO_AR5", min_value=0.0)
-        WtW_LFO_AR5  = float_text_input("LFO WtW (AR5)" , _get(DEFAULTS, "WtW_LFO_AR5" , 92.00), key="WtW_LFO_AR5", min_value=0.0)
-        WtW_MGO_AR5  = float_text_input("MGO WtW (AR5)" , _get(DEFAULTS, "WtW_MGO_AR5" , 93.93), key="WtW_MGO_AR5", min_value=0.0)
-        WtW_BIO_AR5  = float_text_input("BIO WtW (AR5)" , _get(DEFAULTS, "WtW_BIO_AR5" , 70.00), key="WtW_BIO_AR5", min_value=0.0)
+        WtW_LFO  = float_text_input("LFO WtW" , _get(DEFAULTS, "WtW_LFO" , 92.00), key="WtW_LFO", min_value=0.0)
+    w3, w4 = st.columns(2)
+    with w3:
+        WtW_MGO  = float_text_input("MGO WtW" , _get(DEFAULTS, "WtW_MGO" , 93.93), key="WtW_MGO", min_value=0.0)
+    with w4:
+        WtW_BIO  = float_text_input("BIO WtW" , _get(DEFAULTS, "WtW_BIO" , 70.00), key="WtW_BIO", min_value=0.0)
 
     # Compliance Market
     st.markdown("**Compliance Market**")
@@ -227,8 +218,7 @@ with st.sidebar:
             "consecutive_deficit_years": consecutive_deficit_years,
             "HSFO_t": HSFO_t, "LFO_t": LFO_t, "MGO_t": MGO_t, "BIO_t": BIO_t,
             "LCV_HSFO": LCV_HSFO, "LCV_LFO": LCV_LFO, "LCV_MGO": LCV_MGO, "LCV_BIO": LCV_BIO,
-            "WtW_HSFO_AR4": WtW_HSFO_AR4, "WtW_LFO_AR4": WtW_LFO_AR4, "WtW_MGO_AR4": WtW_MGO_AR4, "WtW_BIO_AR4": WtW_BIO_AR4,
-            "WtW_HSFO_AR5": WtW_HSFO_AR5, "WtW_LFO_AR5": WtW_LFO_AR5, "WtW_MGO_AR5": WtW_MGO_AR5, "WtW_BIO_AR5": WtW_BIO_AR5,
+            "WtW_HSFO": WtW_HSFO, "WtW_LFO": WtW_LFO, "WtW_MGO": WtW_MGO, "WtW_BIO": WtW_BIO,
         }
         try:
             with open(DEFAULTS_PATH, "w", encoding="utf-8") as f:
@@ -238,7 +228,7 @@ with st.sidebar:
             st.error(f"Could not save defaults: {e}")
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Derived energies and scope
+# Derived energies and intensity
 # ──────────────────────────────────────────────────────────────────────────────
 energies = {
     "HSFO": compute_energy_MJ(HSFO_t, LCV_HSFO),
@@ -247,74 +237,32 @@ energies = {
     "BIO":  compute_energy_MJ(BIO_t,  LCV_BIO),
 }
 E_total_MJ = sum(energies.values())
-E_scope_MJ = E_total_MJ * scope_factor
+E_scope_MJ = E_total_MJ * (1.0 if "Intra" in voyage_type else 0.5)
 
-wtw_ar4 = {"HSFO": WtW_HSFO_AR4, "LFO": WtW_LFO_AR4, "MGO": WtW_MGO_AR4, "BIO": WtW_BIO_AR4}
-wtw_ar5 = {"HSFO": WtW_HSFO_AR5, "LFO": WtW_LFO_AR5, "MGO": WtW_MGO_AR5, "BIO": WtW_BIO_AR5}
-
-def wtw_for_year(year: int) -> Dict[str, float]:
-    if auto_switch_ar5 and year >= 2026:
-        return wtw_ar5
-    return wtw_ar4
-
-# Compute per-year actual intensity, emissions, compliance balance, penalty/credit
-actual_series = []
-emissions_series = []
-cb_t_series = []
-penalties_eur, credits_eur, net_eur = [], [], []
-penalty_rate_eur_per_gj_const = 2400.0 / 41.0  # €/GJ (since 41,000 MJ/t = 41 GJ/t)
-penalty_rate_per_tco2e_series = []
-
-multiplier = 1.0 + (max(int(consecutive_deficit_years), 1) - 1) / 10.0
-
-for _, row in LIMITS_DF.iterrows():
-    yr = int(row["Year"])
-    g_target = float(row["Limit_gCO2e_per_MJ"])
-    wtw_year = wtw_for_year(yr)
-    g_actual_y = compute_mix_intensity_g_per_MJ(energies, wtw_year)
-    actual_series.append(g_actual_y)
-
-    emissions_tco2e_y = (g_actual_y * E_scope_MJ) / 1e6
-    emissions_series.append(emissions_tco2e_y)
-
-    CB_g = (g_target - g_actual_y) * E_scope_MJ
-    CB_t = CB_g / 1e6
-    cb_t_series.append(CB_t)
-
-    # Penalty/credit using per-year g_actual
-    pen = penalty_eur_per_year(g_actual_y, g_target, E_scope_MJ) * multiplier
-    cre = credit_eur_per_year(g_actual_y, g_target, E_scope_MJ, credit_price_eur_per_vlsfo_t)
-    penalties_eur.append(pen)
-    credits_eur.append(cre)
-    net_eur.append(cre - pen)
-
-    # €/tCO2e rate (per-year, depends on g_actual_y)
-    rate_eur_per_tco2e = (2400.0 * 1_000_000.0) / (max(g_actual_y, 1e-12) * 41_000.0)
-    penalty_rate_per_tco2e_series.append(rate_eur_per_tco2e)
+wtw = {"HSFO": WtW_HSFO, "LFO": WtW_LFO, "MGO": WtW_MGO, "BIO": WtW_BIO}
+g_actual = compute_mix_intensity_g_per_MJ(energies, wtw)  # gCO2e/MJ
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Plot — GHG Intensity vs Limit (actual now year-dependent)
+# Plot — GHG Intensity vs Limit
 # ──────────────────────────────────────────────────────────────────────────────
 st.header("GHG Intensity vs. FuelEU Limit (2025–2050)")
+
+limit_series = LIMITS_DF["Limit_gCO2e_per_MJ"].tolist()
+years = LIMITS_DF["Year"].tolist()
+actual_series = [g_actual for _ in years]
 
 fig = go.Figure()
 fig.add_trace(
     go.Scatter(
-        x=YEARS,
-        y=LIMITS_DF["Limit_gCO2e_per_MJ"].tolist(),
-        name="FuelEU Limit (step)",
-        mode="lines",
-        line=dict(shape="hv", width=3),
-        hovertemplate="Year=%{x}<br>Limit=%{y:,.2f} gCO₂e/MJ<extra></extra>",
+        x=years, y=limit_series, name="FuelEU Limit (step)",
+        mode="lines", line=dict(shape="hv", width=3),
+        hovertemplate="Year=%{x}<br>Limit=%{y:,.2f} gCO₂e/MJ<extra></extra>"
     )
 )
 fig.add_trace(
     go.Scatter(
-        x=YEARS,
-        y=actual_series,
-        name="Your Mix (WtW)",
-        mode="lines+markers",
-        hovertemplate="Year=%{x}<br>Mix=%{y:,.2f} gCO₂e/MJ<extra></extra>",
+        x=years, y=actual_series, name="Your Mix (WtW)", mode="lines",
+        hovertemplate="Year=%{x}<br>Mix=%{y:,.2f} gCO₂e/MJ<extra></extra>"
     )
 )
 
@@ -323,37 +271,52 @@ fig.update_layout(
     xaxis_title="Year",
     yaxis_title="GHG Intensity [gCO₂e/MJ]",
     hovermode="x unified",
-    title=f"Total Energy (mix): {us2(E_total_MJ)} MJ  •  Voyage: {voyage_type} • AR4→AR5: {'ON' if auto_switch_ar5 else 'OFF'}",
+    title=f"Total Energy (mix): {us2(E_total_MJ)} MJ  •  Voyage: {voyage_type}",
     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1.0),
     margin=dict(l=40, r=20, t=80, b=40),
 )
 st.plotly_chart(fig, use_container_width=True)
-st.caption(
-    f"Energy considered for compliance: {us2(E_scope_MJ)} MJ (scope applied).  "
-    f"Penalty reference: 2,400 €/t VLSFO-eq → {us2(penalty_rate_eur_per_gj_const)} €/GJ."
-)
+st.caption(f"Energy considered for compliance: {us2(E_scope_MJ)} MJ (scope applied).")
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Results — single merged table (US format, 2 decimals; Year excluded)
 # ──────────────────────────────────────────────────────────────────────────────
 st.header("Results (merged per-year table)")
 
-df_results = pd.DataFrame({
-    "Year": YEARS,
-    "Reduction_%": LIMITS_DF["Reduction_%"].tolist(),
-    "Limit_gCO2e_per_MJ": LIMITS_DF["Limit_gCO2e_per_MJ"].tolist(),
-    "Actual_gCO2e_per_MJ": actual_series,
-    "Emissions_tCO2e": emissions_series,
-    "Compliance_Balance_tCO2e": cb_t_series,
-    "Penalty_EUR": penalties_eur,
-    "Credit_EUR": credits_eur,
-    "Net_EUR": net_eur,
-    # New informational columns:
-    "Penalty_Rate_EUR_per_tCO2e": penalty_rate_per_tco2e_series,  # varies by year (depends on g_actual_y)
-    "Penalty_Rate_EUR_per_GJ": [penalty_rate_eur_per_gj_const] * len(YEARS),  # constant
-})
+# Per-year emissions (constant across years for a fixed mix & scope)
+emissions_tco2e = (g_actual * E_scope_MJ) / 1e6  # tCO2e
 
-# Formatted copy for display/CSV with US format (exclude Year from formatting)
+# Costs/credits per year
+penalties_eur, credits_eur, net_eur, cb_t = [], [], [], []
+multiplier = 1.0 + (max(int(consecutive_deficit_years), 1) - 1) / 10.0
+
+for _, row in LIMITS_DF.iterrows():
+    g_target = float(row["Limit_gCO2e_per_MJ"])
+    CB_g = (g_target - g_actual) * E_scope_MJ
+    CB_t = CB_g / 1e6
+    cb_t.append(CB_t)
+    pen = penalty_eur_per_year(g_actual, g_target, E_scope_MJ) * multiplier
+    penalties_eur.append(pen)
+    cred = credit_eur_per_year(g_actual, g_target, E_scope_MJ, credit_price_eur_per_vlsfo_t)
+    credits_eur.append(cred)
+    net_eur.append(cred - pen)
+
+df_cost = pd.DataFrame(
+    {
+        "Year": years,
+        "Compliance_Balance_tCO2e": cb_t,
+        "Penalty_EUR": penalties_eur,
+        "Credit_EUR": credits_eur,
+        "Net_EUR": net_eur,
+    }
+)
+
+df_results = LIMITS_DF[["Year", "Reduction_%", "Limit_gCO2e_per_MJ"]].copy()
+df_results["Actual_gCO2e_per_MJ"] = g_actual
+df_results["Emissions_tCO2e"] = emissions_tco2e
+df_results = df_results.merge(df_cost, on="Year", how="left")
+
+# Create a formatted copy for display & CSV (US format with 2 decimals), excluding Year
 df_fmt = df_results.copy()
 for col in df_fmt.columns:
     if col != "Year":
