@@ -25,7 +25,6 @@ REDUCTION_STEPS = [
     (2045, 2049, 62.0),
     (2050, 2050, 80.0),
 ]
-
 YEARS = list(range(2025, 2051))
 
 def limits_by_year() -> pd.DataFrame:
@@ -39,7 +38,7 @@ def limits_by_year() -> pd.DataFrame:
 LIMITS_DF = limits_by_year()
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Persistence helpers
+# Persistence
 # ──────────────────────────────────────────────────────────────────────────────
 def _load_defaults() -> Dict[str, Any]:
     if os.path.exists(DEFAULTS_PATH):
@@ -124,7 +123,7 @@ def float_text_input(label: str, default_val: float, key: str, min_value: float 
         val = parse_us(st.session_state[key], default=default_val, min_value=min_value)
         st.session_state[key] = us2(val)
 
-    st.text_input(label, value=st.session_state[key], key=key, on_change=_normalize)
+    st.text_input(label, value=st.session_state[key], key=key, on_change=_normalize, label_visibility="visible")
     return parse_us(st.session_state[key], default=default_val, min_value=min_value)
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -135,36 +134,44 @@ st.set_page_config(page_title="FuelEU Maritime Calculator", layout="wide")
 st.title("FuelEU Maritime — GHG Intensity & Cost (Simplified)")
 st.caption("Period: 2025–2050 • Limits derived from 2020 baseline 91.16 gCO₂e/MJ • WtW basis • Prices in EUR")
 
-# Sidebar — inputs
+# Sidebar — inputs (make them higher on page + compact)
 with st.sidebar:
-    st.header("Inputs")
-
+    # Compact styling: shrink paddings, gaps, font sizes, and top padding of sidebar container
     st.markdown(
         """
         <style>
+        section[data-testid="stSidebar"] div.block-container{
+            padding-top: .4rem !important;
+            padding-bottom: .4rem !important;
+        }
+        section[data-testid="stSidebar"] [data-testid="stVerticalBlock"]{ gap: .35rem !important; }
+        section[data-testid="stSidebar"] [data-testid="column"]{ padding-left:.15rem; padding-right:.15rem; }
+        section[data-testid="stSidebar"] label{ font-size: .85rem; margin-bottom: .1rem; }
         section[data-testid="stSidebar"] input[type="text"],
         section[data-testid="stSidebar"] input[type="number"]{
-            padding: 0.25rem 0.5rem;
-            min-height: 2rem;
-            height: 2rem;
+            padding: .2rem .4rem;
+            height: 1.6rem;
+            min-height: 1.6rem;
         }
-        /* make penalty boxes visually 'red' */
+        .section-title{ font-weight:600; font-size:.9rem; margin:.25rem 0 .15rem 0; }
         .penalty-label { color: #b91c1c; font-weight: 700; }
-        .penalty-note  { color: #b91c1c; font-size: 0.85rem; }
+        .penalty-note  { color: #b91c1c; font-size: 0.8rem; margin-top:.15rem; }
         </style>
         """,
         unsafe_allow_html=True,
     )
 
+    # Voyage scope (horizontal to save space)
     voyage_type = st.radio(
         "Voyage scope",
         ["Intra-EU (100%)", "Extra-EU (50%)"],
         index=0 if _get(DEFAULTS, "voyage_type", "Intra-EU (100%)") == "Intra-EU (100%)" else 1,
+        horizontal=True,
     )
     scope_factor = 1.0 if "Intra" in voyage_type else 0.5
 
     # Masses
-    st.markdown("**Masses [t]**")
+    st.markdown('<div class="section-title">Masses [t]</div>', unsafe_allow_html=True)
     m1, m2 = st.columns(2)
     with m1:
         HSFO_t = float_text_input("HSFO [t]", _get(DEFAULTS, "HSFO_t", 5_000.0), key="HSFO_t", min_value=0.0)
@@ -177,7 +184,7 @@ with st.sidebar:
         BIO_t  = float_text_input("BIO [t]" , _get(DEFAULTS, "BIO_t" , 0.0), key="BIO_t", min_value=0.0)
 
     # LCVs
-    st.markdown("**LCVs [MJ/ton]**")
+    st.markdown('<div class="section-title">LCVs [MJ/ton]</div>', unsafe_allow_html=True)
     l1, l2 = st.columns(2)
     with l1:
         LCV_HSFO = float_text_input("HSFO LCV", _get(DEFAULTS, "LCV_HSFO", 40_200.0), key="LCV_HSFO", min_value=0.0)
@@ -190,7 +197,7 @@ with st.sidebar:
         LCV_BIO  = float_text_input("BIO LCV" , _get(DEFAULTS, "LCV_BIO" , 38_000.0), key="LCV_BIO", min_value=0.0)
 
     # WtWs
-    st.markdown("**WtW intensities [gCO₂e/MJ]**")
+    st.markdown('<div class="section-title">WtW intensities [gCO₂e/MJ]</div>', unsafe_allow_html=True)
     w1, w2 = st.columns(2)
     with w1:
         WtW_HSFO = float_text_input("HSFO WtW", _get(DEFAULTS, "WtW_HSFO", 92.78), key="WtW_HSFO", min_value=0.0)
@@ -214,15 +221,15 @@ with st.sidebar:
     factor_vlsfo_per_tco2e = (g_actual_preview * 41_000.0) / 1_000_000.0 if g_actual_preview > 0 else 0.0
     st.session_state["factor_vlsfo_per_tco2e"] = factor_vlsfo_per_tco2e  # used by callbacks
 
-    # ── Compliance Market — credits (two linked inputs)
-    st.markdown("**Compliance Market — Credits**")
+    # ── Compliance Market — Credits (two linked inputs)
+    st.markdown('<div class="section-title">Compliance Market — Credits</div>', unsafe_allow_html=True)
 
     if "credit_per_tco2e_str" not in st.session_state:
         st.session_state["credit_per_tco2e_str"] = us2(float(_get(DEFAULTS, "credit_per_tco2e", 200.0)))
     if "credit_per_vlsfo_t_str" not in st.session_state:
         st.session_state["credit_per_vlsfo_t_str"] = us2(float(_get(DEFAULTS, "credit_price_eur_per_vlsfo_t", 0.0)))
     if "credit_sync_guard" not in st.session_state:
-        st.session_state["credit_sync_guard"] = False  # prevents callback ping-pong
+        st.session_state["credit_sync_guard"] = False
 
     def _sync_from_tco2e():
         if st.session_state["credit_sync_guard"]:
@@ -255,11 +262,10 @@ with st.sidebar:
     credit_per_tco2e = parse_us(st.session_state["credit_per_tco2e_str"], 0.0, 0.0)
     credit_price_eur_per_vlsfo_t = parse_us(st.session_state["credit_per_vlsfo_t_str"], 0.0, 0.0)
 
-    # ── Compliance Market — penalties (two linked inputs; RED-styled; default €2,400/VLSFO-eq t)
-    st.markdown("**Compliance Market — Penalties**")
-    #st.markdown('<div class="penalty-note">Regulated default. Change only if regulation changes.</div>', unsafe_allow_html=True)
+    # ── Compliance Market — Penalties (two linked inputs; red labels; default €2,400/VLSFO-eq t)
+    st.markdown('<div class="section-title">Compliance Market — Penalties</div>', unsafe_allow_html=True)
+    st.markdown('<div class="penalty-note">Regulated default. Change only if regulation changes.</div>', unsafe_allow_html=True)
 
-    # Initialize penalty state (defaults)
     if "penalty_per_vlsfo_t_str" not in st.session_state:
         st.session_state["penalty_per_vlsfo_t_str"] = us2(float(_get(DEFAULTS, "penalty_price_eur_per_vlsfo_t", 2_400.0)))
     if "penalty_per_tco2e_str" not in st.session_state:
@@ -302,7 +308,8 @@ with st.sidebar:
     penalty_price_eur_per_vlsfo_t = parse_us(st.session_state["penalty_per_vlsfo_t_str"], 2_400.0, 0.0)
     penalty_price_eur_per_tco2e  = parse_us(st.session_state["penalty_per_tco2e_str"],  0.0, 0.0)
 
-    # Keep +/- steppers ONLY here
+    # Only steppers here
+    st.markdown('<div class="section-title">Other</div>', unsafe_allow_html=True)
     consecutive_deficit_years = int(
         st.number_input(
             "Consecutive deficit years (n)",
@@ -312,7 +319,7 @@ with st.sidebar:
         )
     )
 
-    st.markdown("---")
+    # Save defaults
     if st.button("💾 Save current inputs as defaults"):
         defaults_to_save = {
             "voyage_type": voyage_type,
@@ -430,7 +437,7 @@ df_results["Actual_gCO2e_per_MJ"] = g_actual
 df_results["Emissions_tCO2e"] = emissions_tco2e
 df_results = df_results.merge(df_cost, on="Year", how="left")
 
-# Create a formatted copy for display & CSV (US format with 2 decimals), excluding Year
+# Display (US format, 2 decimals; Year excluded from formatting)
 df_fmt = df_results.copy()
 for col in df_fmt.columns:
     if col != "Year":
