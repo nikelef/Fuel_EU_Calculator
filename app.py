@@ -189,7 +189,7 @@ with st.sidebar:
     with w4:
         WtW_BIO  = float_text_input("BIO WtW" , _get(DEFAULTS, "WtW_BIO" , 70.00), key="WtW_BIO", min_value=0.0)
 
-    # ── Provisional intensity for conversion factor (based on current sidebar values)
+    # ── Preview intensity for conversion factor (based on current sidebar values)
     energies_preview = {
         "HSFO": compute_energy_MJ(HSFO_t, LCV_HSFO),
         "LFO":  compute_energy_MJ(LFO_t,  LCV_LFO),
@@ -200,35 +200,59 @@ with st.sidebar:
     g_actual_preview = compute_mix_intensity_g_per_MJ(energies_preview, wtw_preview)
     factor_vlsfo_per_tco2e = (g_actual_preview * 41_000.0) / 1_000_000.0 if g_actual_preview > 0 else 0.0  # €/tCO2e → €/VLSFO-eq t multiplier
 
-    # Compliance Market — dual, linked inputs
+    # Compliance Market — TWO linked inputs (bidirectional sync via session_state)
     st.markdown("**Compliance Market**")
-    credit_mode_default = _get(DEFAULTS, "credit_mode", "tco2e")  # 'tco2e' or 'vlsfo'
-    entry_mode = st.radio(
-        "Credit price entry mode",
-        ["€/tCO₂e → €/VLSFO-eq t", "€/VLSFO-eq t → €/tCO₂e"],
-        index=0 if credit_mode_default == "tco2e" else 1,
-    )
 
-    if entry_mode.startswith("€/tCO₂e"):
-        credit_per_tco2e = float_text_input(
-            "Credit (€/tCO₂e)",
-            _get(DEFAULTS, "credit_per_tco2e", 200.0),
-            key="credit_per_tco2e",
-            min_value=0.0,
+    # Initialize session state for the two fields and a sync source flag
+    default_credit_per_tco2e = float(_get(DEFAULTS, "credit_per_tco2e", 200.0))
+    default_credit_per_vlsfo = float(_get(DEFAULTS, "credit_price_eur_per_vlsfo_t", 0.0))
+
+    if "credit_sync_source" not in st.session_state:
+        st.session_state["credit_sync_source"] = "tco2e"  # last edited: 'tco2e' or 'vlsfo'
+
+    if "credit_per_tco2e_str" not in st.session_state:
+        st.session_state["credit_per_tco2e_str"] = us2(default_credit_per_tco2e)
+    if "credit_per_vlsfo_t_str" not in st.session_state:
+        st.session_state["credit_per_vlsfo_t_str"] = us2(default_credit_per_vlsfo)
+
+    def _mark_tco2e():
+        st.session_state["credit_sync_source"] = "tco2e"
+    def _mark_vlsfo():
+        st.session_state["credit_sync_source"] = "vlsfo"
+
+    c1, c2 = st.columns(2)
+    with c1:
+        st.text_input(
+            "Credit price €/tCO₂e",
+            key="credit_per_tco2e_str",
+            on_change=_mark_tco2e,
         )
-        credit_price_eur_per_vlsfo_t = credit_per_tco2e * factor_vlsfo_per_tco2e if factor_vlsfo_per_tco2e > 0 else 0.0
-        st.caption(f"Computed: €/VLSFO-eq t (at current mix) = {us2(credit_price_eur_per_vlsfo_t)}")
-        credit_mode = "tco2e"
+    with c2:
+        st.text_input(
+            "Credit price €/VLSFO-eq t",
+            key="credit_per_vlsfo_t_str",
+            on_change=_mark_vlsfo,
+        )
+
+    # Synchronize values according to the last edited field
+    # Convert and rewrite the counterpart with US 2-decimal formatting
+    if factor_vlsfo_per_tco2e > 0:
+        if st.session_state["credit_sync_source"] == "tco2e":
+            _per_tco2e = parse_us(st.session_state["credit_per_tco2e_str"], default_credit_per_tco2e, 0.0)
+            _per_vlsfo = _per_tco2e * factor_vlsfo_per_tco2e
+            st.session_state["credit_per_vlsfo_t_str"] = us2(_per_vlsfo)
+        else:
+            _per_vlsfo = parse_us(st.session_state["credit_per_vlsfo_t_str"], default_credit_per_vlsfo, 0.0)
+            _per_tco2e = (_per_vlsfo / factor_vlsfo_per_tco2e) if factor_vlsfo_per_tco2e > 0 else 0.0
+            st.session_state["credit_per_tco2e_str"] = us2(_per_tco2e)
     else:
-        credit_price_eur_per_vlsfo_t = float_text_input(
-            "Credit (€/VLSFO-eq t)",
-            _get(DEFAULTS, "credit_price_eur_per_vlsfo_t", 0.0),
-            key="credit_price_eur_per_vlsfo_t_in",
-            min_value=0.0,
-        )
-        credit_per_tco2e = (credit_price_eur_per_vlsfo_t / factor_vlsfo_per_tco2e) if factor_vlsfo_per_tco2e > 0 else 0.0
-        st.caption(f"Computed: €/tCO₂e (at current mix) = {us2(credit_per_tco2e)}")
-        credit_mode = "vlsfo"
+        # If factor is zero (no energy / undefined intensity), keep both as-is; downstream will treat as 0 where needed
+        _per_tco2e = parse_us(st.session_state["credit_per_tco2e_str"], default_credit_per_tco2e, 0.0)
+        _per_vlsfo = parse_us(st.session_state["credit_per_vlsfo_t_str"], default_credit_per_vlsfo, 0.0)
+
+    # Final numeric values used by the model:
+    credit_per_tco2e = parse_us(st.session_state["credit_per_tco2e_str"], default_credit_per_tco2e, 0.0)
+    credit_price_eur_per_vlsfo_t = parse_us(st.session_state["credit_per_vlsfo_t_str"], default_credit_per_vlsfo, 0.0)
 
     # Keep +/- steppers ONLY here
     consecutive_deficit_years = int(
@@ -244,7 +268,6 @@ with st.sidebar:
     if st.button("💾 Save current inputs as defaults"):
         defaults_to_save = {
             "voyage_type": voyage_type,
-            "credit_mode": credit_mode,
             "credit_per_tco2e": credit_per_tco2e,
             "credit_price_eur_per_vlsfo_t": credit_price_eur_per_vlsfo_t,
             "consecutive_deficit_years": consecutive_deficit_years,
@@ -260,7 +283,7 @@ with st.sidebar:
             st.error(f"Could not save defaults: {e}")
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Derived energies and intensity (definitive, for plots & results)
+# Derived energies and intensity
 # ──────────────────────────────────────────────────────────────────────────────
 energies = {
     "HSFO": compute_energy_MJ(HSFO_t, LCV_HSFO),
