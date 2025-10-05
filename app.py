@@ -72,13 +72,23 @@ def compute_mix_intensity_g_per_MJ(energies_MJ: dict, wtw_g_per_MJ: dict) -> flo
         num += E * max(float(wtw_g_per_MJ.get(k, 0.0)), 0.0)
     return num / E_total
 
-def penalty_eur_per_year(g_actual: float, g_target: float, E_scope_MJ: float) -> float:
-    if E_scope_MJ <= 0 or g_actual <= 0:
+def penalty_eur_per_year(
+    g_actual: float,
+    g_target: float,
+    E_scope_MJ: float,
+    penalty_price_eur_per_vlsfo_t: float,
+) -> float:
+    """
+    Penalty = deficit converted to VLSFO-equivalent tons × penalty_price_eur_per_vlsfo_t.
+    CB_g = (g_target - g_actual) * E_scope_MJ  (g); if CB_g >= 0 → no penalty.
+    VLSFO-eq tons = (-CB_g) / (g_actual [g/MJ] * 41,000 [MJ/t])
+    """
+    if E_scope_MJ <= 0 or g_actual <= 0 or penalty_price_eur_per_vlsfo_t <= 0:
         return 0.0
     CB_g = (g_target - g_actual) * E_scope_MJ
     if CB_g >= 0:
         return 0.0
-    return (-CB_g) / (g_actual * 41000.0) * 2400.0
+    return (-CB_g) / (g_actual * 41_000.0) * penalty_price_eur_per_vlsfo_t
 
 def credit_eur_per_year(g_actual: float, g_target: float, E_scope_MJ: float, credit_price_eur_per_vlsfo_t: float) -> float:
     if E_scope_MJ <= 0 or g_actual <= 0 or credit_price_eur_per_vlsfo_t <= 0:
@@ -86,7 +96,7 @@ def credit_eur_per_year(g_actual: float, g_target: float, E_scope_MJ: float, cre
     CB_g = (g_target - g_actual) * E_scope_MJ
     if CB_g <= 0:
         return 0.0
-    return (CB_g) / (g_actual * 41000.0) * credit_price_eur_per_vlsfo_t
+    return (CB_g) / (g_actual * 41_000.0) * credit_price_eur_per_vlsfo_t
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Formatting helpers (US format, 2 decimals)
@@ -138,6 +148,9 @@ with st.sidebar:
             min-height: 2rem;
             height: 2rem;
         }
+        /* make penalty boxes visually 'red' */
+        .penalty-label { color: #b91c1c; font-weight: 700; }
+        .penalty-note  { color: #b91c1c; font-size: 0.85rem; }
         </style>
         """,
         unsafe_allow_html=True,
@@ -201,10 +214,9 @@ with st.sidebar:
     factor_vlsfo_per_tco2e = (g_actual_preview * 41_000.0) / 1_000_000.0 if g_actual_preview > 0 else 0.0
     st.session_state["factor_vlsfo_per_tco2e"] = factor_vlsfo_per_tco2e  # used by callbacks
 
-    # ── Compliance Market — TWO linked inputs with safe, callback-based sync
-    st.markdown("**Compliance Market**")
+    # ── Compliance Market — credits (two linked inputs)
+    st.markdown("**Compliance Market — Credits**")
 
-    # Initialize state strings (US-format) once
     if "credit_per_tco2e_str" not in st.session_state:
         st.session_state["credit_per_tco2e_str"] = us2(float(_get(DEFAULTS, "credit_per_tco2e", 200.0)))
     if "credit_per_vlsfo_t_str" not in st.session_state:
@@ -219,7 +231,6 @@ with st.sidebar:
         per_tco2e = parse_us(st.session_state["credit_per_tco2e_str"], 0.0, 0.0)
         factor = st.session_state.get("factor_vlsfo_per_tco2e", 0.0)
         per_vlsfo = per_tco2e * factor if factor > 0 else 0.0
-        # normalize both fields
         st.session_state["credit_per_tco2e_str"] = us2(per_tco2e)
         st.session_state["credit_per_vlsfo_t_str"] = us2(per_vlsfo)
         st.session_state["credit_sync_guard"] = False
@@ -231,7 +242,6 @@ with st.sidebar:
         per_vlsfo = parse_us(st.session_state["credit_per_vlsfo_t_str"], 0.0, 0.0)
         factor = st.session_state.get("factor_vlsfo_per_tco2e", 0.0)
         per_tco2e = (per_vlsfo / factor) if factor > 0 else 0.0
-        # normalize both fields
         st.session_state["credit_per_vlsfo_t_str"] = us2(per_vlsfo)
         st.session_state["credit_per_tco2e_str"] = us2(per_tco2e)
         st.session_state["credit_sync_guard"] = False
@@ -242,9 +252,55 @@ with st.sidebar:
     with c2:
         st.text_input("Credit price €/VLSFO-eq t", key="credit_per_vlsfo_t_str", on_change=_sync_from_vlsfo)
 
-    # Final numeric values used by the model/results
     credit_per_tco2e = parse_us(st.session_state["credit_per_tco2e_str"], 0.0, 0.0)
     credit_price_eur_per_vlsfo_t = parse_us(st.session_state["credit_per_vlsfo_t_str"], 0.0, 0.0)
+
+    # ── Compliance Market — penalties (two linked inputs; RED-styled; default €2,400/VLSFO-eq t)
+    st.markdown("**Compliance Market — Penalties**")
+    st.markdown('<div class="penalty-note">Regulated default. Change only if regulation changes.</div>', unsafe_allow_html=True)
+
+    # Initialize penalty state (defaults)
+    if "penalty_per_vlsfo_t_str" not in st.session_state:
+        st.session_state["penalty_per_vlsfo_t_str"] = us2(float(_get(DEFAULTS, "penalty_price_eur_per_vlsfo_t", 2_400.0)))
+    if "penalty_per_tco2e_str" not in st.session_state:
+        default_pen_vlsfo = parse_us(st.session_state["penalty_per_vlsfo_t_str"], 2_400.0, 0.0)
+        default_pen_tco2e = (default_pen_vlsfo / factor_vlsfo_per_tco2e) if factor_vlsfo_per_tco2e > 0 else 0.0
+        st.session_state["penalty_per_tco2e_str"] = us2(default_pen_tco2e)
+    if "penalty_sync_guard" not in st.session_state:
+        st.session_state["penalty_sync_guard"] = False
+
+    def _pen_sync_from_tco2e():
+        if st.session_state["penalty_sync_guard"]:
+            return
+        st.session_state["penalty_sync_guard"] = True
+        per_tco2e = parse_us(st.session_state["penalty_per_tco2e_str"], 0.0, 0.0)
+        factor = st.session_state.get("factor_vlsfo_per_tco2e", 0.0)
+        per_vlsfo = per_tco2e * factor if factor > 0 else 0.0
+        st.session_state["penalty_per_tco2e_str"] = us2(per_tco2e)
+        st.session_state["penalty_per_vlsfo_t_str"] = us2(per_vlsfo)
+        st.session_state["penalty_sync_guard"] = False
+
+    def _pen_sync_from_vlsfo():
+        if st.session_state["penalty_sync_guard"]:
+            return
+        st.session_state["penalty_sync_guard"] = True
+        per_vlsfo = parse_us(st.session_state["penalty_per_vlsfo_t_str"], 2_400.0, 0.0)
+        factor = st.session_state.get("factor_vlsfo_per_tco2e", 0.0)
+        per_tco2e = (per_vlsfo / factor) if factor > 0 else 0.0
+        st.session_state["penalty_per_vlsfo_t_str"] = us2(per_vlsfo)
+        st.session_state["penalty_per_tco2e_str"] = us2(per_tco2e)
+        st.session_state["penalty_sync_guard"] = False
+
+    p1, p2 = st.columns(2)
+    with p1:
+        st.markdown('<div class="penalty-label">Penalty price €/tCO₂e</div>', unsafe_allow_html=True)
+        st.text_input("", key="penalty_per_tco2e_str", on_change=_pen_sync_from_tco2e, placeholder="regulated default")
+    with p2:
+        st.markdown('<div class="penalty-label">Penalty price €/VLSFO-eq t</div>', unsafe_allow_html=True)
+        st.text_input("", key="penalty_per_vlsfo_t_str", on_change=_pen_sync_from_vlsfo, placeholder="regulated default")
+
+    penalty_price_eur_per_vlsfo_t = parse_us(st.session_state["penalty_per_vlsfo_t_str"], 2_400.0, 0.0)
+    penalty_price_eur_per_tco2e  = parse_us(st.session_state["penalty_per_tco2e_str"],  0.0, 0.0)
 
     # Keep +/- steppers ONLY here
     consecutive_deficit_years = int(
@@ -260,8 +316,12 @@ with st.sidebar:
     if st.button("💾 Save current inputs as defaults"):
         defaults_to_save = {
             "voyage_type": voyage_type,
+            # credit
             "credit_per_tco2e": credit_per_tco2e,
             "credit_price_eur_per_vlsfo_t": credit_price_eur_per_vlsfo_t,
+            # penalty
+            "penalty_price_eur_per_vlsfo_t": penalty_price_eur_per_vlsfo_t,
+            # other
             "consecutive_deficit_years": consecutive_deficit_years,
             "HSFO_t": HSFO_t, "LFO_t": LFO_t, "MGO_t": MGO_t, "BIO_t": BIO_t,
             "LCV_HSFO": LCV_HSFO, "LCV_LFO": LCV_LFO, "LCV_MGO": LCV_MGO, "LCV_BIO": LCV_BIO,
@@ -342,38 +402,18 @@ for _, row in LIMITS_DF.iterrows():
     CB_g = (g_target - g_actual) * E_scope_MJ
     CB_t = CB_g / 1e6
     cb_t.append(CB_t)
-    pen = penalty_eur_per_year(g_actual, g_target, E_scope_MJ) * multiplier
+
+    pen = penalty_eur_per_year(
+        g_actual=g_actual,
+        g_target=g_target,
+        E_scope_MJ=E_scope_MJ,
+        penalty_price_eur_per_vlsfo_t=penalty_price_eur_per_vlsfo_t,
+    ) * multiplier
     penalties_eur.append(pen)
-    cred = credit_eur_per_year(g_actual, g_target, E_scope_MJ, credit_price_eur_per_vlsfo_t=credit_price_eur_per_vlsfo_t)
+
+    cred = credit_eur_per_year(g_actual, g_target, E_scope_MJ, credit_price_eur_per_vlsfo_t)
     credits_eur.append(cred)
     net_eur.append(cred - pen)
 
 df_cost = pd.DataFrame(
     {
-        "Year": years,
-        "Compliance_Balance_tCO2e": cb_t,
-        "Penalty_EUR": penalties_eur,
-        "Credit_EUR": credits_eur,
-        "Net_EUR": net_eur,
-    }
-)
-
-df_results = LIMITS_DF[["Year", "Reduction_%", "Limit_gCO2e_per_MJ"]].copy()
-df_results["Actual_gCO2e_per_MJ"] = g_actual
-df_results["Emissions_tCO2e"] = emissions_tco2e
-df_results = df_results.merge(df_cost, on="Year", how="left")
-
-# Create a formatted copy for display & CSV (US format with 2 decimals), excluding Year
-df_fmt = df_results.copy()
-for col in df_fmt.columns:
-    if col != "Year":
-        df_fmt[col] = df_fmt[col].apply(us2)
-
-st.dataframe(df_fmt, use_container_width=True)
-
-st.download_button(
-    "Download per-year results (CSV)",
-    data=df_fmt.to_csv(index=False),
-    file_name="fueleu_results_2025_2050.csv",
-    mime="text/csv",
-)
