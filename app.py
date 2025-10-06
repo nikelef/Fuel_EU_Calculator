@@ -265,7 +265,7 @@ with st.sidebar:
 
         # At-berth masses (EU ports) — 100% scope in Extra-EU
         st.markdown('<div class="section-title">At-berth masses [t] (EU ports)</div>', unsafe_allow_html=True)
-        st.markdown('<div class="muted-note">Always 100% in scope; 
+        st.markdown('<div class="muted-note">Always 100% in scope; when Extra-EU voyages,
                     unsafe_allow_html=True)
         bm1, bm2 = st.columns(2)
         with bm1:
