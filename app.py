@@ -1,17 +1,17 @@
 # app.py — FuelEU Maritime Calculator (Simplified, 2025–2050, EUR-only + defaults)
 # Scope logic:
-#   • Intra-EU: 100% of fuels + 100% of EU OPS electricity (WtW=0)
+#   • Intra-EU: 100% of fuels + 100% of EU OPS electricity (WtW = 0)
 #   • Extra-EU: EU OPS electricity 100%; fuels split into:
 #       – At-berth fuels (EU ports): 100% scope
 #       – Voyage fuels: 50% scope with “BIO first; fossil fills remainder proportionally”
 # UI/formatting:
-#   • Intra-EU shows only “Masses [t] — total (voyage + berth)”
-#   • Extra-EU shows “Masses [t] — voyage (excluding at-berth)” + “At-berth masses [t] (EU ports)”
+#   • Intra-EU → only “Masses [t] — total (voyage + berth)”
+#   • Extra-EU → “Masses [t] — voyage (excluding at-berth)” + “At-berth masses [t] (EU ports)”
 #   • EU OPS electricity input in kWh (converted to MJ)
 #   • US-format numbers (1,234.56); no +/- steppers except for “Consecutive deficit years”
 #   • Linked credit/penalty price inputs (€/tCO2e ↔ €/VLSFO-eq t), penalty default 2,400
-#   • Inputs spaced a bit more; Energy breakdown metrics now BIGGER & BOLD (per request)
-#   • Chart: “Your Mix” renamed to “Attained GHG”, dashed line, and inline value labels
+#   • Energy breakdown labels bigger & bold; numbers smaller to avoid truncation
+#   • Chart: “Attained GHG” dashed; step labels shown below limit line and above attained line
 # --------------------------------------------------------------------------------------
 from __future__ import annotations
 
@@ -201,16 +201,16 @@ st.title("FuelEU Maritime — GHG Intensity & Cost (Simplified)")
 st.caption("Period: 2025–2050 • Limits derived from 2020 baseline 91.16 gCO₂e/MJ • WtW basis • Prices in EUR")
 
 # Global CSS:
-#  • Inputs: spaced a bit more (but still compact)
-#  • Metrics: BIGGER & BOLD (per latest request)
+#  • Energy breakdown labels bigger & bold; numbers smaller to avoid ellipsis
+#  • Inputs spaced sensibly
 #  • Muted note style (at-berth explanation)
 st.markdown(
     """
     <style>
-    /* Metric styling — bigger & bold */
-    [data-testid="stMetricLabel"] { font-size: 1.05rem !important; font-weight: 700 !important; color: #111827 !important; }
-    [data-testid="stMetricValue"] { font-size: 1.35rem !important; font-weight: 800 !important; line-height: 1.1 !important; }
-    [data-testid="stMetric"] { padding: .35rem .5rem !important; }
+    /* Energy breakdown metrics — labels bigger & bold; numbers smaller */
+    [data-testid="stMetricLabel"] { font-size: 1.00rem !important; font-weight: 800 !important; color: #111827 !important; }
+    [data-testid="stMetricValue"] { font-size: 0.95rem !important; font-weight: 700 !important; line-height: 1.10 !important; }
+    [data-testid="stMetric"] { padding: .25rem .40rem !important; }
 
     /* Sidebar input spacing */
     section[data-testid="stSidebar"] div.block-container{
@@ -478,7 +478,7 @@ with st.sidebar:
         if "Extra-EU" in voyage_type:
             hsfo_t, lfo_t, mgo_t, bio_t = HSFO_voy_t + HSFO_berth_t, LFO_voy_t + LFO_berth_t, MGO_voy_t + MGO_berth_t, BIO_voy_t + BIO_berth_t
         else:
-            hsfo_t, lfo_t, mgo_t, bio_t = HSFO_voy_t, LFO_voy_t, MGO_voy_t, BIO_voy_t  # here voy_t == total_t; berth zeros
+            hsfo_t, lfo_t, mgo_t, bio_t = HSFO_voy_t, LFO_voy_t, MGO_voy_t, BIO_voy_t  # voy_t == total_t; berth zeros
 
         defaults_to_save = {
             "voyage_type": voyage_type,
@@ -541,7 +541,7 @@ E_total_MJ = sum(energies_full.values())
 E_scope_MJ = sum(scoped_energies.values())
 g_actual = compute_mix_intensity_g_per_MJ(scoped_energies, wtw)  # gCO2e/MJ (in-scope mix)
 
-# Top-of-page breakdown (now bigger & bold via CSS above)
+# Top-of-page breakdown (labels bigger & bold; numbers smaller per CSS above)
 st.subheader("Energy breakdown (MJ)")
 cA, cB, cC, cD, cE, cF = st.columns(6)
 with cA: st.metric("Total energy (all)", f"{us2(E_total_MJ)} MJ")
@@ -552,7 +552,7 @@ with cE: st.metric("Fossil — in scope", f"{us2(scoped_energies.get('HSFO',0)+s
 with cF: st.metric("BIO — in scope", f"{us2(scoped_energies.get('BIO',0))} MJ")
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Plot — GHG Intensity vs Limit (with inline value labels + dashed “Attained GHG”)
+# Plot — GHG Intensity vs Limit (step labels below limit; attained dashed with labels)
 # ──────────────────────────────────────────────────────────────────────────────
 st.header("GHG Intensity vs. FuelEU Limit (2025–2050)")
 
@@ -560,17 +560,18 @@ limit_series = LIMITS_DF["Limit_gCO2e_per_MJ"].tolist()
 years = LIMITS_DF["Year"].tolist()
 actual_series = [g_actual for _ in years]
 
-# Step years where labels should appear on the limit (the change points)
+# Show labels at official step-change years
 step_years = [2025, 2030, 2035, 2040, 2045, 2050]
+
+# Labels BELOW the limit line
 limit_text = [f"{limit_series[i]:,.2f}" if years[i] in step_years else "" for i in range(len(years))]
 
-# For Attained GHG text: show only at the last year to avoid clutter
-attained_text = ["" for _ in years]
-attained_text[-1] = f"{g_actual:,.2f}"
+# Labels ABOVE the attained dashed line at the same step years
+attained_text = [f"{g_actual:,.2f}" if years[i] in step_years else "" for i in range(len(years))]
 
 fig = go.Figure()
 
-# Limit (step) — solid line, labels at step years, show markers so labels anchor nicely
+# Limit (step) — solid, labels below
 fig.add_trace(
     go.Scatter(
         x=years,
@@ -579,13 +580,13 @@ fig.add_trace(
         mode="lines+markers+text",
         line=dict(shape="hv", width=3),
         text=limit_text,
-        textposition="top left",
+        textposition="bottom center",
         textfont=dict(size=12),
         hovertemplate="Year=%{x}<br>Limit=%{y:,.2f} gCO₂e/MJ<extra></extra>",
     )
 )
 
-# Attained GHG — dashed line, with a value label at the last point
+# Attained GHG — dashed, labels above
 fig.add_trace(
     go.Scatter(
         x=years,
@@ -594,7 +595,7 @@ fig.add_trace(
         mode="lines+text",
         line=dict(dash="dash", width=3),
         text=attained_text,
-        textposition="middle right",
+        textposition="top center",
         textfont=dict(size=12),
         hovertemplate="Year=%{x}<br>Attained=%{y:,.2f} gCO₂e/MJ<extra></extra>",
     )
