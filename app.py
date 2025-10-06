@@ -586,12 +586,12 @@ fig.update_layout(
     xaxis_title="Year",
     yaxis_title="GHG Intensity [gCO₂e/MJ]",
     hovermode="x unified",
-    title=(
-        f"Total (all): {us2(E_total_MJ)} MJ • In-scope: {us2(E_scope_MJ)} MJ • "
-        f"Fossil (all/in-scope): {us2(fossil_all_MJ)} / {us2(fossil_scope_MJ)} MJ • "
-        f"BIO (all/in-scope): {us2(bio_all_MJ)} / {us2(bio_scope_MJ)} MJ • "
-        f"ELEC (OPS): {us2(ELEC_MJ)} MJ"
-    ),
+#    title=(
+#        f"Total (all): {us2(E_total_MJ)} MJ • In-scope: {us2(E_scope_MJ)} MJ • "
+#        f"Fossil (all/in-scope): {us2(fossil_all_MJ)} / {us2(fossil_scope_MJ)} MJ • "
+#        f"BIO (all/in-scope): {us2(bio_all_MJ)} / {us2(bio_scope_MJ)} MJ • "
+#        f"ELEC (OPS): {us2(ELEC_MJ)} MJ"
+#    ),
     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1.0),
     margin=dict(l=40, r=20, t=110, b=40),
 )
