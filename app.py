@@ -1,7 +1,7 @@
 # app.py — FuelEU Maritime Calculator (Simplified, 2025–2050, EUR-only + defaults)
 # Implements:
 #   • Extra-EU rule for fuels: “BIO first up to the 50% cap; fossil fills the rest”
-#   • EU OPS electricity (MWh) input — always visible, always 100% in scope, WtW = 0 g/MJ
+#   • EU OPS electricity input in kWh — always visible, always 100% in scope, WtW = 0 g/MJ
 #   • Compact inputs, At Berth option, linked credit/penalty prices, small metric UI
 # --------------------------------------------------------------------------------------
 from __future__ import annotations
@@ -57,6 +57,20 @@ def _get(d: Dict[str, Any], key: str, fallback):
     return d.get(key, fallback)
 
 DEFAULTS = _load_defaults()
+
+def _get_ops_kwh_default() -> float:
+    """Backward-compatible default for OPS electricity: prefer kWh; if only MWh exists, convert."""
+    if "OPS_kWh" in DEFAULTS:
+        try:
+            return float(DEFAULTS["OPS_kWh"])
+        except Exception:
+            return 0.0
+    if "OPS_MWh" in DEFAULTS:
+        try:
+            return float(DEFAULTS["OPS_MWh"]) * 1_000.0  # MWh → kWh
+        except Exception:
+            return 0.0
+    return 0.0
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Calculations
@@ -207,7 +221,7 @@ with st.sidebar:
         unsafe_allow_html=True,
     )
 
-    # Voyage scope (kept for scenario selection; ELEC is NOT gated by this)
+    # Voyage scope (scenario selection; ELEC is NOT gated by this)
     scope_options = ["Intra-EU (100%)", "Extra-EU (50%)", "At Berth (100%)"]
     saved_scope = _get(DEFAULTS, "voyage_type", scope_options[0])
     try:
@@ -255,11 +269,10 @@ with st.sidebar:
     with w4:
         WtW_BIO  = float_text_input("BIO WtW" , _get(DEFAULTS, "WtW_BIO" , 70.00), key="WtW_BIO", min_value=0.0)
 
-    # EU OPS electricity — ALWAYS visible; input in MWh; converted to MJ; 100% in scope; WtW = 0 g/MJ
+    # EU OPS electricity — ALWAYS visible; input in kWh; converted to MJ (1 kWh = 3.6 MJ); 100% in scope; WtW = 0 g/MJ
     st.markdown('<div class="section-title">EU OPS electricity</div>', unsafe_allow_html=True)
-    OPS_MWh = float_text_input("Electricity delivered (MWh)", _get(DEFAULTS, "OPS_MWh", 0.0),
-                               key="OPS_MWh", min_value=0.0)
-    OPS_MJ  = OPS_MWh * 3_600.0  # 1 MWh = 3,600 MJ
+    OPS_kWh = float_text_input("Electricity delivered (kWh)", _get_ops_kwh_default(), key="OPS_kWh", min_value=0.0)
+    OPS_MJ  = OPS_kWh * 3.6  # kWh → MJ
 
     # Preview factor for €/tCO2e ↔ €/VLSFO-eq t (based on IN-SCOPE mix incl. ELEC)
     energies_preview_full = {
@@ -383,7 +396,7 @@ with st.sidebar:
             "HSFO_t": HSFO_t, "LFO_t": LFO_t, "MGO_t": MGO_t, "BIO_t": BIO_t,
             "LCV_HSFO": LCV_HSFO, "LCV_LFO": LCV_LFO, "LCV_MGO": LCV_MGO, "LCV_BIO": LCV_BIO,
             "WtW_HSFO": WtW_HSFO, "WtW_LFO": WtW_LFO, "WtW_MGO": WtW_MGO, "WtW_BIO": WtW_BIO,
-            "OPS_MWh": OPS_MWh,
+            "OPS_kWh": OPS_kWh,  # save in kWh
         }
         try:
             with open(DEFAULTS_PATH, "w", encoding="utf-8") as f:
@@ -400,7 +413,7 @@ energies_full = {
     "LFO":  compute_energy_MJ(LFO_t,  LCV_LFO),
     "MGO":  compute_energy_MJ(MGO_t,  LCV_MGO),
     "BIO":  compute_energy_MJ(BIO_t,  LCV_BIO),
-    "ELEC": OPS_MJ,  # EU OPS electricity
+    "ELEC": OPS_MJ,  # EU OPS electricity (kWh → MJ)
 }
 wtw = {"HSFO": WtW_HSFO, "LFO": WtW_LFO, "MGO": WtW_MGO, "BIO": WtW_BIO, "ELEC": 0.0}
 
