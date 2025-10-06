@@ -10,7 +10,8 @@
 #   • EU OPS electricity input in kWh (converted to MJ)
 #   • US-format numbers (1,234.56); no +/- steppers except for “Consecutive deficit years”
 #   • Linked credit/penalty price inputs (€/tCO2e ↔ €/VLSFO-eq t), penalty default 2,400
-#   • Slightly more spacing between inputs; small metrics
+#   • Inputs spaced a bit more; Energy breakdown metrics now BIGGER & BOLD (per request)
+#   • Chart: “Your Mix” renamed to “Attained GHG”, dashed line, and inline value labels
 # --------------------------------------------------------------------------------------
 from __future__ import annotations
 
@@ -199,28 +200,33 @@ st.set_page_config(page_title="FuelEU Maritime Calculator", layout="wide")
 st.title("FuelEU Maritime — GHG Intensity & Cost (Simplified)")
 st.caption("Period: 2025–2050 • Limits derived from 2020 baseline 91.16 gCO₂e/MJ • WtW basis • Prices in EUR")
 
-# Global CSS: slightly less compact inputs; small metrics; muted note
+# Global CSS:
+#  • Inputs: spaced a bit more (but still compact)
+#  • Metrics: BIGGER & BOLD (per latest request)
+#  • Muted note style (at-berth explanation)
 st.markdown(
     """
     <style>
-    [data-testid="stMetricLabel"] { font-size: 0.78rem !important; color: #616161 !important; }
-    [data-testid="stMetricValue"] { font-size: 0.98rem !important; line-height: 1.18 !important; }
-    [data-testid="stMetric"] { padding: .2rem .3rem !important; }
+    /* Metric styling — bigger & bold */
+    [data-testid="stMetricLabel"] { font-size: 1.05rem !important; font-weight: 700 !important; color: #111827 !important; }
+    [data-testid="stMetricValue"] { font-size: 1.35rem !important; font-weight: 800 !important; line-height: 1.1 !important; }
+    [data-testid="stMetric"] { padding: .35rem .5rem !important; }
 
+    /* Sidebar input spacing */
     section[data-testid="stSidebar"] div.block-container{
         padding-top: .6rem !important; padding-bottom: .6rem !important;
     }
-    section[data-testid="stSidebar"] [data-testid="stVerticalBlock"]{ gap: .5rem !important; }
-    section[data-testid="stSidebar"] [data-testid="column"]{ padding-left:.2rem; padding-right:.2rem; }
-    section[data-testid="stSidebar"] label{ font-size: .9rem; margin-bottom: .15rem; }
+    section[data-testid="stSidebar"] [data-testid="stVerticalBlock"]{ gap: .6rem !important; }
+    section[data-testid="stSidebar"] [data-testid="column"]{ padding-left:.25rem; padding-right:.25rem; }
+    section[data-testid="stSidebar"] label{ font-size: .95rem; margin-bottom: .2rem; font-weight: 600; }
     section[data-testid="stSidebar"] input[type="text"],
     section[data-testid="stSidebar"] input[type="number"]{
-        padding: .28rem .5rem; height: 1.85rem; min-height: 1.85rem;
+        padding: .32rem .55rem; height: 2.0rem; min-height: 2.0rem;
     }
-    .section-title{ font-weight:600; font-size:.95rem; margin:.3rem 0 .2rem 0; }
-    .muted-note{ font-size:.80rem; color:#6b7280; margin:-.05rem 0 .35rem 0; }
-    .penalty-label { color: #b91c1c; font-weight: 700; }
-    .penalty-note  { color: #b91c1c; font-size: 0.82rem; margin-top:.15rem; }
+    .section-title{ font-weight:700; font-size:1.0rem; margin:.35rem 0 .25rem 0; }
+    .muted-note{ font-size:.86rem; color:#6b7280; margin:-.05rem 0 .4rem 0; }
+    .penalty-label { color: #b91c1c; font-weight: 800; }
+    .penalty-note  { color: #b91c1c; font-size: 0.9rem; margin-top:.2rem; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -239,7 +245,7 @@ with st.sidebar:
 
     # ── Masses UI depends on scope
     if "Extra-EU" in voyage_type:
-        # Voyage masses (excluding at-berth) — these are the ones subject to 50%
+        # Voyage masses (excluding at-berth) — subject to 50%
         st.markdown('<div class="section-title">Masses [t] — voyage (excluding at-berth)</div>', unsafe_allow_html=True)
         vm1, vm2 = st.columns(2)
         with vm1:
@@ -335,7 +341,6 @@ with st.sidebar:
     st.divider()
 
     # Preview factor for €/tCO2e ↔ €/VLSFO-eq t (based on IN-SCOPE mix incl. ELEC and at-berth fuels)
-    # Build preview energies (voyage + berth according to scope)
     if "Extra-EU" in voyage_type:
         energies_preview_fuel_voyage = {
             "HSFO": compute_energy_MJ(HSFO_voy_t, LCV_HSFO),
@@ -355,7 +360,7 @@ with st.sidebar:
                                                            OPS_MJ)
     else:
         energies_preview_fuel_full = {
-            "HSFO": compute_energy_MJ(HSFO_voy_t, LCV_HSFO),  # here voy_t == total_t
+            "HSFO": compute_energy_MJ(HSFO_voy_t, LCV_HSFO),  # voy_t == total_t
             "LFO":  compute_energy_MJ(LFO_voy_t,  LCV_LFO),
             "MGO":  compute_energy_MJ(MGO_voy_t,  LCV_MGO),
             "BIO":  compute_energy_MJ(BIO_voy_t,  LCV_BIO),
@@ -536,23 +541,18 @@ E_total_MJ = sum(energies_full.values())
 E_scope_MJ = sum(scoped_energies.values())
 g_actual = compute_mix_intensity_g_per_MJ(scoped_energies, wtw)  # gCO2e/MJ (in-scope mix)
 
-# Top-of-page breakdown (fossil/BIO; ELEC shown in chart title)
-fossil_all_MJ   = energies_fuel_full["HSFO"] + energies_fuel_full["LFO"] + energies_fuel_full["MGO"]
-bio_all_MJ      = energies_fuel_full["BIO"]
-fossil_scope_MJ = scoped_energies.get("HSFO",0)+scoped_energies.get("LFO",0)+scoped_energies.get("MGO",0)
-bio_scope_MJ    = scoped_energies.get("BIO",0)
-
+# Top-of-page breakdown (now bigger & bold via CSS above)
 st.subheader("Energy breakdown (MJ)")
 cA, cB, cC, cD, cE, cF = st.columns(6)
 with cA: st.metric("Total energy (all)", f"{us2(E_total_MJ)} MJ")
 with cB: st.metric("In-scope energy", f"{us2(E_scope_MJ)} MJ")
-with cC: st.metric("Fossil — all", f"{us2(fossil_all_MJ)} MJ")
-with cD: st.metric("BIO — all", f"{us2(bio_all_MJ)} MJ")
-with cE: st.metric("Fossil — in scope", f"{us2(fossil_scope_MJ)} MJ")
-with cF: st.metric("BIO — in scope", f"{us2(bio_scope_MJ)} MJ")
+with cC: st.metric("Fossil — all", f"{us2(energies_fuel_full['HSFO'] + energies_fuel_full['LFO'] + energies_fuel_full['MGO'])} MJ")
+with cD: st.metric("BIO — all", f"{us2(energies_fuel_full['BIO'])} MJ")
+with cE: st.metric("Fossil — in scope", f"{us2(scoped_energies.get('HSFO',0)+scoped_energies.get('LFO',0)+scoped_energies.get('MGO',0))} MJ")
+with cF: st.metric("BIO — in scope", f"{us2(scoped_energies.get('BIO',0))} MJ")
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Plot — GHG Intensity vs Limit
+# Plot — GHG Intensity vs Limit (with inline value labels + dashed “Attained GHG”)
 # ──────────────────────────────────────────────────────────────────────────────
 st.header("GHG Intensity vs. FuelEU Limit (2025–2050)")
 
@@ -560,24 +560,43 @@ limit_series = LIMITS_DF["Limit_gCO2e_per_MJ"].tolist()
 years = LIMITS_DF["Year"].tolist()
 actual_series = [g_actual for _ in years]
 
+# Step years where labels should appear on the limit (the change points)
+step_years = [2025, 2030, 2035, 2040, 2045, 2050]
+limit_text = [f"{limit_series[i]:,.2f}" if years[i] in step_years else "" for i in range(len(years))]
+
+# For Attained GHG text: show only at the last year to avoid clutter
+attained_text = ["" for _ in years]
+attained_text[-1] = f"{g_actual:,.2f}"
+
 fig = go.Figure()
+
+# Limit (step) — solid line, labels at step years, show markers so labels anchor nicely
 fig.add_trace(
     go.Scatter(
         x=years,
         y=limit_series,
         name="FuelEU Limit (step)",
-        mode="lines",
+        mode="lines+markers+text",
         line=dict(shape="hv", width=3),
+        text=limit_text,
+        textposition="top left",
+        textfont=dict(size=12),
         hovertemplate="Year=%{x}<br>Limit=%{y:,.2f} gCO₂e/MJ<extra></extra>",
     )
 )
+
+# Attained GHG — dashed line, with a value label at the last point
 fig.add_trace(
     go.Scatter(
         x=years,
         y=actual_series,
-        name="Your Mix (WtW, in-scope)",
-        mode="lines",
-        hovertemplate="Year=%{x}<br>Mix=%{y:,.2f} gCO₂e/MJ<extra></extra>",
+        name="Attained GHG",
+        mode="lines+text",
+        line=dict(dash="dash", width=3),
+        text=attained_text,
+        textposition="middle right",
+        textfont=dict(size=12),
+        hovertemplate="Year=%{x}<br>Attained=%{y:,.2f} gCO₂e/MJ<extra></extra>",
     )
 )
 
@@ -586,14 +605,15 @@ fig.update_layout(
     xaxis_title="Year",
     yaxis_title="GHG Intensity [gCO₂e/MJ]",
     hovermode="x unified",
-#    title=(
-#        f"Total (all): {us2(E_total_MJ)} MJ • In-scope: {us2(E_scope_MJ)} MJ • "
-#        f"Fossil (all/in-scope): {us2(fossil_all_MJ)} / {us2(fossil_scope_MJ)} MJ • "
-#        f"BIO (all/in-scope): {us2(bio_all_MJ)} / {us2(bio_scope_MJ)} MJ • "
-#        f"ELEC (OPS): {us2(ELEC_MJ)} MJ"
-#    ),
+    title=(
+        f"Total (all): {us2(E_total_MJ)} MJ • In-scope: {us2(E_scope_MJ)} MJ • "
+        f"Fossil (all/in-scope): {us2(energies_fuel_full['HSFO'] + energies_fuel_full['LFO'] + energies_fuel_full['MGO'])} / "
+        f"{us2(scoped_energies.get('HSFO',0)+scoped_energies.get('LFO',0)+scoped_energies.get('MGO',0))} MJ • "
+        f"BIO (all/in-scope): {us2(energies_fuel_full['BIO'])} / {us2(scoped_energies.get('BIO',0))} MJ • "
+        f"ELEC (OPS): {us2(ELEC_MJ)} MJ"
+    ),
     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1.0),
-    margin=dict(l=40, r=20, t=110, b=40),
+    margin=dict(l=40, r=20, t=120, b=40),
 )
 st.plotly_chart(fig, use_container_width=True)
 st.caption("ELEC (OPS) is always 100% in scope. For Extra-EU, at-berth fuels are 100% scope; voyage fuels follow the 50% rule with BIO priority.")
