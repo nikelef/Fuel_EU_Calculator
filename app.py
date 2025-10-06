@@ -12,6 +12,7 @@
 #   • Linked credit/penalty price inputs (€/tCO2e ↔ €/VLSFO-eq t), penalty default 2,400
 #   • Energy breakdown labels bigger & bold; numbers smaller to avoid truncation
 #   • Chart: “Attained GHG” dashed; step labels shown below limit line and above attained line
+#   • Tighter spacing between the chart header and the plot (reduced top margin, compact header)
 # --------------------------------------------------------------------------------------
 from __future__ import annotations
 
@@ -265,8 +266,7 @@ with st.sidebar:
 
         # At-berth masses (EU ports) — 100% scope in Extra-EU
         st.markdown('<div class="section-title">At-berth masses [t] (EU ports)</div>', unsafe_allow_html=True)
-        st.markdown('<div class="muted-note"> 100% in scope; when in Extra-EU voyages.</div>',
-                    unsafe_allow_html=True)
+        st.markdown('<div class="muted-note">100% in scope; particularly relevant for Extra-EU voyages.</div>', unsafe_allow_html=True)
         bm1, bm2 = st.columns(2)
         with bm1:
             HSFO_berth_t = float_text_input("HSFO at berth [t]", _get(DEFAULTS, "HSFO_berth_t", 0.0),
@@ -554,7 +554,8 @@ with cF: st.metric("BIO — in scope", f"{us2(scoped_energies.get('BIO',0))} MJ"
 # ──────────────────────────────────────────────────────────────────────────────
 # Plot — GHG Intensity vs Limit (step labels below limit; attained dashed with labels)
 # ──────────────────────────────────────────────────────────────────────────────
-st.header("GHG Intensity vs. FuelEU Limit (2025–2050)")
+# Compact header to reduce gap above the plot
+st.markdown('<h2 style="margin:0 0 .25rem 0;">GHG Intensity vs. FuelEU Limit (2025–2050)</h2>', unsafe_allow_html=True)
 
 limit_series = LIMITS_DF["Limit_gCO2e_per_MJ"].tolist()
 years = LIMITS_DF["Year"].tolist()
@@ -606,15 +607,9 @@ fig.update_layout(
     xaxis_title="Year",
     yaxis_title="GHG Intensity [gCO₂e/MJ]",
     hovermode="x unified",
-#    title=(
- #       f"Total (all): {us2(E_total_MJ)} MJ • In-scope: {us2(E_scope_MJ)} MJ • "
-  #      f"Fossil (all/in-scope): {us2(energies_fuel_full['HSFO'] + energies_fuel_full['LFO'] + energies_fuel_full['MGO'])} / "
-   #     f"{us2(scoped_energies.get('HSFO',0)+scoped_energies.get('LFO',0)+scoped_energies.get('MGO',0))} MJ • "
-    #    f"BIO (all/in-scope): {us2(energies_fuel_full['BIO'])} / {us2(scoped_energies.get('BIO',0))} MJ • "
-     #   f"ELEC (OPS): {us2(ELEC_MJ)} MJ"
-   # ),
+    # Title removed to keep the gap small. If you add a long title, increase t slightly.
     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1.0),
-    margin=dict(l=40, r=20, t=120, b=40),
+    margin=dict(l=40, r=20, t=50, b=40),  # reduced from t=120 to tighten spacing
 )
 st.plotly_chart(fig, use_container_width=True)
 st.caption("ELEC (OPS) is always 100% in scope. For Extra-EU, at-berth fuels are 100% scope; voyage fuels follow the 50% rule with BIO priority.")
