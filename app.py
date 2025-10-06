@@ -1,6 +1,8 @@
 # app.py — FuelEU Maritime Calculator (Simplified, 2025–2050, EUR-only + defaults)
-# Implements Extra-EU rule: “BIO first up to the 50% cap; fossil fills the rest”
-# Adds compact inputs, At Berth option, linked credit/penalty prices, and small metric UI
+# Implements:
+#   • Extra-EU rule for fuels: “BIO first up to the 50% cap; fossil fills the rest”
+#   • EU OPS electricity (MWh) input — always visible, always 100% in scope, WtW = 0 g/MJ
+#   • Compact inputs, At Berth option, linked credit/penalty prices, small metric UI
 # --------------------------------------------------------------------------------------
 from __future__ import annotations
 
@@ -130,31 +132,37 @@ def float_text_input(label: str, default_val: float, key: str, min_value: float 
     return parse_us(st.session_state[key], default=default_val, min_value=min_value)
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Scoping logic — “BIO first up to the 50% cap; fossil fills the rest”
+# Scoping logic — fuels: “BIO first up to the 50% cap; fossil fills the rest”
+# Electricity (EU OPS) is ALWAYS 100% in scope and has WtW = 0 g/MJ.
 # ──────────────────────────────────────────────────────────────────────────────
 def scoped_energies_for_voyage(energies: Dict[str, float], voyage_type: str) -> Dict[str, float]:
     """
     Returns energies IN SCOPE.
-    - Intra-EU / At Berth: 100% counts.
-    - Extra-EU: 50% of total counts; BIO is attributed first up to that 50%,
-      remainder of the scoped half is filled proportionally by HSFO/LFO/MGO.
+    - Intra-EU / At Berth: 100% of fuels + 100% of ELEC.
+    - Extra-EU: ELEC is still 100% scope; fuels are capped at 50% of total fuel energy,
+               with BIO attributed first up to that cap, and fossil (HSFO/LFO/MGO) filling the rest proportionally.
     """
-    E = {k: float(energies.get(k, 0.0)) for k in ["HSFO", "LFO", "MGO", "BIO"]}
-    E_tot = sum(E.values())
+    E = {k: float(energies.get(k, 0.0)) for k in ["HSFO", "LFO", "MGO", "BIO", "ELEC"]}
+
+    # Electricity (OPS at EU berth) — always included at 100% scope
+    elec_scope = E["ELEC"]
+
     if "Extra-EU" in voyage_type:
-        E_scope = 0.5 * E_tot
-        bio_attr = min(E["BIO"], E_scope)
-        remainder = E_scope - bio_attr
-        foss_tot = E["HSFO"] + E["LFO"] + E["MGO"]
+        fuel_tot   = E["HSFO"] + E["LFO"] + E["MGO"] + E["BIO"]
+        half_scope = 0.5 * fuel_tot
+        bio_attr   = min(E["BIO"], half_scope)
+        remainder  = half_scope - bio_attr
+        foss_tot   = E["HSFO"] + E["LFO"] + E["MGO"]
         if foss_tot > 0 and remainder > 0:
             hsfo_attr = remainder * (E["HSFO"] / foss_tot)
             lfo_attr  = remainder * (E["LFO"]  / foss_tot)
             mgo_attr  = remainder * (E["MGO"]  / foss_tot)
         else:
             hsfo_attr = lfo_attr = mgo_attr = 0.0
-        return {"HSFO": hsfo_attr, "LFO": lfo_attr, "MGO": mgo_attr, "BIO": bio_attr}
-    # Intra-EU or At Berth: full scope
-    return E
+        return {"HSFO": hsfo_attr, "LFO": lfo_attr, "MGO": mgo_attr, "BIO": bio_attr, "ELEC": elec_scope}
+
+    # Intra-EU or At Berth: 100% of everything
+    return {"HSFO": E["HSFO"], "LFO": E["LFO"], "MGO": E["MGO"], "BIO": E["BIO"], "ELEC": elec_scope}
 
 # ──────────────────────────────────────────────────────────────────────────────
 # UI
@@ -199,7 +207,7 @@ with st.sidebar:
         unsafe_allow_html=True,
     )
 
-    # Voyage scope (adds "At Berth (100%)")
+    # Voyage scope (kept for scenario selection; ELEC is NOT gated by this)
     scope_options = ["Intra-EU (100%)", "Extra-EU (50%)", "At Berth (100%)"]
     saved_scope = _get(DEFAULTS, "voyage_type", scope_options[0])
     try:
@@ -247,14 +255,21 @@ with st.sidebar:
     with w4:
         WtW_BIO  = float_text_input("BIO WtW" , _get(DEFAULTS, "WtW_BIO" , 70.00), key="WtW_BIO", min_value=0.0)
 
-    # Preview factor for €/tCO2e ↔ €/VLSFO-eq t (based on IN-SCOPE mix)
+    # EU OPS electricity — ALWAYS visible; input in MWh; converted to MJ; 100% in scope; WtW = 0 g/MJ
+    st.markdown('<div class="section-title">EU OPS electricity</div>', unsafe_allow_html=True)
+    OPS_MWh = float_text_input("Electricity delivered (MWh)", _get(DEFAULTS, "OPS_MWh", 0.0),
+                               key="OPS_MWh", min_value=0.0)
+    OPS_MJ  = OPS_MWh * 3_600.0  # 1 MWh = 3,600 MJ
+
+    # Preview factor for €/tCO2e ↔ €/VLSFO-eq t (based on IN-SCOPE mix incl. ELEC)
     energies_preview_full = {
         "HSFO": compute_energy_MJ(HSFO_t, LCV_HSFO),
         "LFO":  compute_energy_MJ(LFO_t,  LCV_LFO),
         "MGO":  compute_energy_MJ(MGO_t,  LCV_MGO),
         "BIO":  compute_energy_MJ(BIO_t,  LCV_BIO),
+        "ELEC": OPS_MJ,
     }
-    wtw_preview = {"HSFO": WtW_HSFO, "LFO": WtW_LFO, "MGO": WtW_MGO, "BIO": WtW_BIO}
+    wtw_preview = {"HSFO": WtW_HSFO, "LFO": WtW_LFO, "MGO": WtW_MGO, "BIO": WtW_BIO, "ELEC": 0.0}
     energies_preview_scoped = scoped_energies_for_voyage(energies_preview_full, voyage_type)
     g_actual_preview = compute_mix_intensity_g_per_MJ(energies_preview_scoped, wtw_preview)
     factor_vlsfo_per_tco2e = (g_actual_preview * 41_000.0) / 1_000_000.0 if g_actual_preview > 0 else 0.0
@@ -368,6 +383,7 @@ with st.sidebar:
             "HSFO_t": HSFO_t, "LFO_t": LFO_t, "MGO_t": MGO_t, "BIO_t": BIO_t,
             "LCV_HSFO": LCV_HSFO, "LCV_LFO": LCV_LFO, "LCV_MGO": LCV_MGO, "LCV_BIO": LCV_BIO,
             "WtW_HSFO": WtW_HSFO, "WtW_LFO": WtW_LFO, "WtW_MGO": WtW_MGO, "WtW_BIO": WtW_BIO,
+            "OPS_MWh": OPS_MWh,
         }
         try:
             with open(DEFAULTS_PATH, "w", encoding="utf-8") as f:
@@ -384,15 +400,16 @@ energies_full = {
     "LFO":  compute_energy_MJ(LFO_t,  LCV_LFO),
     "MGO":  compute_energy_MJ(MGO_t,  LCV_MGO),
     "BIO":  compute_energy_MJ(BIO_t,  LCV_BIO),
+    "ELEC": OPS_MJ,  # EU OPS electricity
 }
-wtw = {"HSFO": WtW_HSFO, "LFO": WtW_LFO, "MGO": WtW_MGO, "BIO": WtW_BIO}
+wtw = {"HSFO": WtW_HSFO, "LFO": WtW_LFO, "MGO": WtW_MGO, "BIO": WtW_BIO, "ELEC": 0.0}
 
 scoped_energies = scoped_energies_for_voyage(energies_full, voyage_type)
 E_total_MJ = sum(energies_full.values())
 E_scope_MJ = sum(scoped_energies.values())
 g_actual = compute_mix_intensity_g_per_MJ(scoped_energies, wtw)  # gCO2e/MJ (in-scope mix)
 
-# New: top-of-page breakdown of fossil vs BIO (all & in-scope)
+# Top-of-page breakdown of fossil vs BIO (all & in-scope) — ELEC counted separately in totals
 fossil_all_MJ   = energies_full["HSFO"] + energies_full["LFO"] + energies_full["MGO"]
 bio_all_MJ      = energies_full["BIO"]
 fossil_scope_MJ = scoped_energies["HSFO"] + scoped_energies["LFO"] + scoped_energies["MGO"]
@@ -445,13 +462,14 @@ fig.update_layout(
     title=(
         f"Total (all): {us2(E_total_MJ)} MJ • In-scope: {us2(E_scope_MJ)} MJ • "
         f"Fossil (all/in-scope): {us2(fossil_all_MJ)} / {us2(fossil_scope_MJ)} MJ • "
-        f"BIO (all/in-scope): {us2(bio_all_MJ)} / {us2(bio_scope_MJ)} MJ"
+        f"BIO (all/in-scope): {us2(bio_all_MJ)} / {us2(bio_scope_MJ)} MJ • "
+        f"ELEC (OPS): {us2(energies_full['ELEC'])} MJ"
     ),
     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1.0),
-    margin=dict(l=40, r=20, t=100, b=40),
+    margin=dict(l=40, r=20, t=110, b=40),
 )
 st.plotly_chart(fig, use_container_width=True)
-st.caption(f"Energy considered for compliance (in scope): {us2(E_scope_MJ)} MJ.")
+st.caption(f"Energy considered for compliance (in scope): {us2(E_scope_MJ)} MJ. ELEC (OPS) is always 100% in scope.")
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Results — merged per-year table (US format, 2 decimals; Year excluded from formatting)
