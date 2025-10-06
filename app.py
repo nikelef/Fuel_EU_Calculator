@@ -606,13 +606,13 @@ fig.update_layout(
     xaxis_title="Year",
     yaxis_title="GHG Intensity [gCO₂e/MJ]",
     hovermode="x unified",
-    title=(
-        f"Total (all): {us2(E_total_MJ)} MJ • In-scope: {us2(E_scope_MJ)} MJ • "
-        f"Fossil (all/in-scope): {us2(energies_fuel_full['HSFO'] + energies_fuel_full['LFO'] + energies_fuel_full['MGO'])} / "
-        f"{us2(scoped_energies.get('HSFO',0)+scoped_energies.get('LFO',0)+scoped_energies.get('MGO',0))} MJ • "
-        f"BIO (all/in-scope): {us2(energies_fuel_full['BIO'])} / {us2(scoped_energies.get('BIO',0))} MJ • "
-        f"ELEC (OPS): {us2(ELEC_MJ)} MJ"
-    ),
+#    title=(
+ #       f"Total (all): {us2(E_total_MJ)} MJ • In-scope: {us2(E_scope_MJ)} MJ • "
+  #      f"Fossil (all/in-scope): {us2(energies_fuel_full['HSFO'] + energies_fuel_full['LFO'] + energies_fuel_full['MGO'])} / "
+   #     f"{us2(scoped_energies.get('HSFO',0)+scoped_energies.get('LFO',0)+scoped_energies.get('MGO',0))} MJ • "
+    #    f"BIO (all/in-scope): {us2(energies_fuel_full['BIO'])} / {us2(scoped_energies.get('BIO',0))} MJ • "
+     #   f"ELEC (OPS): {us2(ELEC_MJ)} MJ"
+   # ),
     legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1.0),
     margin=dict(l=40, r=20, t=120, b=40),
 )
