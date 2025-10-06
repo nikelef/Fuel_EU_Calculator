@@ -8,7 +8,7 @@
 #   • EU OPS electricity input in kWh (converted to MJ)
 #   • US-format numbers (1,234.56); no +/- steppers except for “Consecutive deficit years”
 #   • Linked credit/penalty price inputs (€/tCO2e ↔ €/VLSFO-eq t), penalty default 2,400
-#   • Smaller st.metric typography
+#   • Slightly more spacing between inputs; small metrics
 # --------------------------------------------------------------------------------------
 from __future__ import annotations
 
@@ -197,42 +197,35 @@ st.set_page_config(page_title="FuelEU Maritime Calculator", layout="wide")
 st.title("FuelEU Maritime — GHG Intensity & Cost (Simplified)")
 st.caption("Period: 2025–2050 • Limits derived from 2020 baseline 91.16 gCO₂e/MJ • WtW basis • Prices in EUR")
 
-# Global CSS to make st.metric labels/values smaller
+# Global CSS: slightly less compact inputs; small metrics; muted note
 st.markdown(
     """
     <style>
-    [data-testid="stMetricLabel"] { font-size: 0.75rem !important; color: #616161 !important; }
-    [data-testid="stMetricValue"] { font-size: 0.95rem !important; line-height: 1.15 !important; }
-    [data-testid="stMetric"] { padding: .15rem .25rem !important; }
+    [data-testid="stMetricLabel"] { font-size: 0.78rem !important; color: #616161 !important; }
+    [data-testid="stMetricValue"] { font-size: 0.98rem !important; line-height: 1.18 !important; }
+    [data-testid="stMetric"] { padding: .2rem .3rem !important; }
+
+    section[data-testid="stSidebar"] div.block-container{
+        padding-top: .6rem !important; padding-bottom: .6rem !important;
+    }
+    section[data-testid="stSidebar"] [data-testid="stVerticalBlock"]{ gap: .5rem !important; }
+    section[data-testid="stSidebar"] [data-testid="column"]{ padding-left:.2rem; padding-right:.2rem; }
+    section[data-testid="stSidebar"] label{ font-size: .9rem; margin-bottom: .15rem; }
+    section[data-testid="stSidebar"] input[type="text"],
+    section[data-testid="stSidebar"] input[type="number"]{
+        padding: .28rem .5rem; height: 1.85rem; min-height: 1.85rem;
+    }
+    .section-title{ font-weight:600; font-size:.95rem; margin:.3rem 0 .2rem 0; }
+    .muted-note{ font-size:.80rem; color:#6b7280; margin:-.05rem 0 .35rem 0; }
+    .penalty-label { color: #b91c1c; font-weight: 700; }
+    .penalty-note  { color: #b91c1c; font-size: 0.82rem; margin-top:.15rem; }
     </style>
     """,
     unsafe_allow_html=True,
 )
 
-# Sidebar — compact inputs high on page
+# Sidebar — structured groups with a bit more spacing
 with st.sidebar:
-    st.markdown(
-        """
-        <style>
-        section[data-testid="stSidebar"] div.block-container{
-            padding-top: .4rem !important; padding-bottom: .4rem !important;
-        }
-        section[data-testid="stSidebar"] [data-testid="stVerticalBlock"]{ gap: .35rem !important; }
-        section[data-testid="stSidebar"] [data-testid="column"]{ padding-left:.15rem; padding-right:.15rem; }
-        section[data-testid="stSidebar"] label{ font-size: .85rem; margin-bottom: .1rem; }
-        section[data-testid="stSidebar"] input[type="text"],
-        section[data-testid="stSidebar"] input[type="number"]{
-            padding: .2rem .4rem; height: 1.6rem; min-height: 1.6rem;
-        }
-        .section-title{ font-weight:600; font-size:.9rem; margin:.25rem 0 .15rem 0; }
-        .penalty-label { color: #b91c1c; font-weight: 700; }
-        .penalty-note  { color: #b91c1c; font-size: 0.8rem; margin-top:.15rem; }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    # Voyage scope (removed "At Berth" as a mode — berth is modeled by inputs)
     scope_options = ["Intra-EU (100%)", "Extra-EU (50%)"]
     saved_scope = _get(DEFAULTS, "voyage_type", scope_options[0])
     try:
@@ -240,6 +233,7 @@ with st.sidebar:
     except ValueError:
         idx = 0
     voyage_type = st.radio("Voyage scope", scope_options, index=idx, horizontal=True)
+    st.divider()
 
     # Masses — TOTAL (all operations)
     st.markdown('<div class="section-title">Masses [t] — total (voyage + berth)</div>', unsafe_allow_html=True)
@@ -253,9 +247,12 @@ with st.sidebar:
         MGO_t  = float_text_input("MGO [t]" , _get(DEFAULTS, "MGO_t" , 0.0), key="MGO_t", min_value=0.0)
     with m4:
         BIO_t  = float_text_input("BIO [t]" , _get(DEFAULTS, "BIO_t" , 0.0), key="BIO_t", min_value=0.0)
+    st.divider()
 
     # Masses — AT BERTH (EU ports) → 100% scope even for Extra-EU
     st.markdown('<div class="section-title">At-berth masses [t] (EU ports)</div>', unsafe_allow_html=True)
+    st.markdown('<div class="muted-note">Always 100% in scope; particularly relevant for Extra-EU voyages.</div>',
+                unsafe_allow_html=True)
     bm1, bm2 = st.columns(2)
     with bm1:
         HSFO_berth_t = float_text_input("HSFO at berth [t]", _get(DEFAULTS, "HSFO_berth_t", 0.0),
@@ -270,6 +267,7 @@ with st.sidebar:
     with bm4:
         BIO_berth_t  = float_text_input("BIO at berth [t]" , _get(DEFAULTS, "BIO_berth_t" , 0.0),
                                         key="BIO_berth_t", min_value=0.0)
+    st.divider()
 
     # LCVs
     st.markdown('<div class="section-title">LCVs [MJ/ton]</div>', unsafe_allow_html=True)
@@ -283,6 +281,7 @@ with st.sidebar:
         LCV_MGO  = float_text_input("MGO LCV" , _get(DEFAULTS, "LCV_MGO" , 42_700.0), key="LCV_MGO", min_value=0.0)
     with l4:
         LCV_BIO  = float_text_input("BIO LCV" , _get(DEFAULTS, "LCV_BIO" , 38_000.0), key="LCV_BIO", min_value=0.0)
+    st.divider()
 
     # WtWs
     st.markdown('<div class="section-title">WtW intensities [gCO₂e/MJ]</div>', unsafe_allow_html=True)
@@ -296,11 +295,13 @@ with st.sidebar:
         WtW_MGO  = float_text_input("MGO WtW" , _get(DEFAULTS, "WtW_MGO" , 93.93), key="WtW_MGO", min_value=0.0)
     with w4:
         WtW_BIO  = float_text_input("BIO WtW" , _get(DEFAULTS, "WtW_BIO" , 70.00), key="WtW_BIO", min_value=0.0)
+    st.divider()
 
     # EU OPS electricity — input in kWh; converted to MJ (1 kWh = 3.6 MJ); 100% scope; WtW = 0 g/MJ
     st.markdown('<div class="section-title">EU OPS electricity</div>', unsafe_allow_html=True)
     OPS_kWh = float_text_input("Electricity delivered (kWh)", _get_ops_kwh_default(), key="OPS_kWh", min_value=0.0)
     OPS_MJ  = OPS_kWh * 3.6  # kWh → MJ
+    st.divider()
 
     # Preview factor for €/tCO2e ↔ €/VLSFO-eq t (based on IN-SCOPE mix incl. ELEC and at-berth fuels)
     energies_preview_fuel_full = {
@@ -329,6 +330,7 @@ with st.sidebar:
     g_actual_preview = compute_mix_intensity_g_per_MJ(energies_preview_scoped, wtw_preview)
     factor_vlsfo_per_tco2e = (g_actual_preview * 41_000.0) / 1_000_000.0 if g_actual_preview > 0 else 0.0
     st.session_state["factor_vlsfo_per_tco2e"] = factor_vlsfo_per_tco2e
+    st.divider()
 
     # Credits — linked inputs
     st.markdown('<div class="section-title">Compliance Market — Credits</div>', unsafe_allow_html=True)
@@ -369,6 +371,7 @@ with st.sidebar:
 
     credit_per_tco2e = parse_us(st.session_state["credit_per_tco2e_str"], 0.0, 0.0)
     credit_price_eur_per_vlsfo_t = parse_us(st.session_state["credit_per_vlsfo_t_str"], 0.0, 0.0)
+    st.divider()
 
     # Penalties — linked inputs (red, default 2,400 €/VLSFO-eq t)
     st.markdown('<div class="section-title">Compliance Market — Penalties</div>', unsafe_allow_html=True)
@@ -412,6 +415,7 @@ with st.sidebar:
     with p2:
         st.markdown('<div class="penalty-label">Penalty price €/VLSFO-eq t</div>', unsafe_allow_html=True)
         st.text_input("", key="penalty_per_vlsfo_t_str", on_change=_pen_sync_from_vlsfo, placeholder="regulated default")
+    st.divider()
 
     penalty_price_eur_per_vlsfo_t = parse_us(st.session_state["penalty_per_vlsfo_t_str"], 2_400.0, 0.0)
     penalty_price_eur_per_tco2e  = parse_us(st.session_state["penalty_per_tco2e_str"],  0.0, 0.0)
@@ -488,7 +492,7 @@ E_total_MJ = sum(energies_full.values())
 E_scope_MJ = sum(scoped_energies.values())
 g_actual = compute_mix_intensity_g_per_MJ(scoped_energies, wtw)  # gCO2e/MJ (in-scope mix)
 
-# Top-of-page breakdown (fossil/BIO; ELEC shown later in title)
+# Top-of-page breakdown (fossil/BIO; ELEC shown in chart title)
 fossil_all_MJ   = energies_fuel_full["HSFO"] + energies_fuel_full["LFO"] + energies_fuel_full["MGO"]
 bio_all_MJ      = energies_fuel_full["BIO"]
 fossil_scope_MJ = scoped_energies.get("HSFO",0)+scoped_energies.get("LFO",0)+scoped_energies.get("MGO",0)
