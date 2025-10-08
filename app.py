@@ -444,7 +444,7 @@ with st.sidebar:
 
     # Banking input + start year (start-year just below input)
     banking_tco2e_input = float_text_input(
-        "Banking to next year [tCO₂e] (capped vs pre-surplus)",
+        "Banking to next year [tCO₂e]",
         _get(DEFAULTS, "banking_tco2e", 0.0),
         key="BANK_T",
         min_value=0.0
