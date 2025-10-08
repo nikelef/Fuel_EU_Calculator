@@ -490,7 +490,7 @@ with st.sidebar:
     st.markdown('<div class="section-title">Banking & Pooling (tCO₂e)</div>', unsafe_allow_html=True)
 
     pooling_tco2e_input = float_text_input_signed(
-        "Pooling [tCO₂e] — +uptake, −provide (capped vs pre-surplus)",
+        "Pooling [tCO₂e]: + uptake tCO2e, − provide tCO2e",
         _get(DEFAULTS, "pooling_tco2e", 0.0),
         key="POOL_T"
     )
