@@ -486,42 +486,36 @@ with st.sidebar:
                         value=int(_get(DEFAULTS, "consecutive_deficit_years", 1)), step=1)
     )
 
-    # Banking & Pooling (tCO2e) — independent + start-year selectors
+    # Banking & Pooling (tCO2e) — independent + start-year selectors (placed below inputs)
     st.divider()
     st.markdown('<div class="section-title">Banking & Pooling (tCO₂e)</div>', unsafe_allow_html=True)
 
-    # Pooling row: input + start-year selector
-    pc1, pc2 = st.columns([3, 1])
-    with pc1:
-        pooling_tco2e_input = float_text_input_signed(
-            "Pooling [tCO₂e]: + uptake tCO2e, − provide tCO2e",
-            _get(DEFAULTS, "pooling_tco2e", 0.0),
-            key="POOL_T"
-        )
-    with pc2:
-        pooling_start_year = st.selectbox(
-            "Apply pooling from year",
-            YEARS,
-            index=YEARS.index(int(_get(DEFAULTS, "pooling_start_year", YEARS[0]))),
-            key="POOL_START_Y"
-        )
+    # Pooling input, then start-year directly below
+    pooling_tco2e_input = float_text_input_signed(
+        "Pooling [tCO₂e]: + uptake tCO2e, − provide tCO2e",
+        _get(DEFAULTS, "pooling_tco2e", 0.0),
+        key="POOL_T"
+    )
+    pooling_start_year = st.selectbox(
+        "Apply pooling from year",
+        YEARS,
+        index=YEARS.index(int(_get(DEFAULTS, "pooling_start_year", YEARS[0]))),
+        key="POOL_START_Y"
+    )
 
-    # Banking row: input + start-year selector
-    bc1, bc2 = st.columns([3, 1])
-    with bc1:
-        banking_tco2e_input = float_text_input(
-            "Banking to next year [tCO₂e] (capped vs pre-surplus)",
-            _get(DEFAULTS, "banking_tco2e", 0.0),
-            key="BANK_T",
-            min_value=0.0
-        )
-    with bc2:
-        banking_start_year = st.selectbox(
-            "Apply banking from year",
-            YEARS,
-            index=YEARS.index(int(_get(DEFAULTS, "banking_start_year", YEARS[0]))),
-            key="BANK_START_Y"
-        )
+    # Banking input, then start-year directly below
+    banking_tco2e_input = float_text_input(
+        "Banking to next year [tCO₂e] (capped vs pre-surplus)",
+        _get(DEFAULTS, "banking_tco2e", 0.0),
+        key="BANK_T",
+        min_value=0.0
+    )
+    banking_start_year = st.selectbox(
+        "Apply banking from year",
+        YEARS,
+        index=YEARS.index(int(_get(DEFAULTS, "banking_start_year", YEARS[0]))),
+        key="BANK_START_Y"
+    )
 
     # Save defaults
     if st.button("💾 Save current inputs as defaults"):
@@ -773,7 +767,7 @@ df_cost = pd.DataFrame(
         "Emissions_tCO2e": [emissions_tco2e]*len(years),
 
         "Compliance_Balance_tCO2e": cb_raw_t,     # raw
-        "Banked_to_Next_Year_tCO2e": bank_applied,  # ← moved before CarryIn
+        "Banked_to_Next_Year_tCO2e": bank_applied,  # ← before CarryIn
         "CarryIn_Banked_tCO2e": carry_in_list,    # from previous year
         "Effective_Balance_tCO2e": cb_eff_t,      # before adjustments
         "Pooling_tCO2e_Applied": pool_applied,    # +uptake / −provide (capped vs pre-surplus)
