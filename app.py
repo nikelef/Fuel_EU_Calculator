@@ -439,7 +439,7 @@ with st.sidebar:
     if "penalty_per_vlsfo_t_str" not in st.session_state:
         st.session_state["penalty_per_vlsfo_t_str"] = us2(float(_get(DEFAULTS, "penalty_price_eur_per_vlsfo_t", 2_400.0)))
     if "penalty_per_tco2e_str" not in st.session_state:
-        default_pen_vlsfo = parse_us(st.session_state["penalty_per_vlsfo_t_str"], 2,400.0, 0.0)
+        default_pen_vlsfo = parse_us(st.session_state["penalty_per_vlsfo_t_str"], 2400.0, 0.0)
         default_pen_tco2e = (default_pen_vlsfo / factor_vlsfo_per_tco2e) if factor_vlsfo_per_tco2e > 0 else 0.0
         st.session_state["penalty_per_tco2e_str"] = us2(default_pen_tco2e)
     if "penalty_sync_guard" not in st.session_state:
