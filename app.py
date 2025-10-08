@@ -17,7 +17,7 @@
 # Added features (2025-10-08):
 #   • Pooling & Banking are independent (each capped vs pre-adjustment surplus):
 #       – Pooling: +uptake applies as entered (can overshoot); −provide capped to pre-surplus (never flips to deficit).
-#       – Banking: capped to pre-surplus; generates carry-in for next year only from banking.
+#       – Banking: capped to pre-surplus; creates carry-in for next year equal to the final (post-safety-clamp) banked amount.
 #   • Processing order per year: Carry-in → Independent Pooling & Banking (vs pre-surplus) → Safety clamp → €.
 # --------------------------------------------------------------------------------------
 from __future__ import annotations
@@ -675,9 +675,6 @@ for _, row in LIMITS_DF.iterrows():
     if pre_surplus == 0.0 and requested_bank > 0.0:
         info_bank_ignored_no_surplus += 1
 
-    # Carry generated only from banking
-    carry_next = bank_use
-
     # ---------- F I N A L   B A L A N C E  &  € ----------
     final_bal = cb_eff + pool_use - bank_use
 
@@ -693,6 +690,9 @@ for _, row in LIMITS_DF.iterrows():
             needed = 0.0
         final_bal = cb_eff + pool_use - bank_use
         info_final_safety_trim += 1
+
+    # Carry to next year is the *final* banked amount (after any trims)
+    carry_next = bank_use
 
     final_balance_t.append(final_bal)
 
@@ -715,7 +715,7 @@ for _, row in LIMITS_DF.iterrows():
     # Prepare next loop
     carry = carry_next
 
-# Informational notes (no errors)
+# Informational notes (no hard errors)
 if info_provide_capped > 0:
     st.info(f"Pooling (provide < 0) capped vs pre-surplus in {info_provide_capped} year(s).")
 if info_bank_capped > 0:
