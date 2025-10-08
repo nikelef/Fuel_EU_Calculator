@@ -10,17 +10,21 @@
 #   • Intra-EU → only “Masses [t] — total (voyage + berth)”
 #   • Extra-EU → “Masses [t] — voyage (excluding at-berth)” + “At-berth masses [t] (EU ports)”
 #   • EU OPS electricity input in kWh (converted to MJ)
-#   • US-format numbers (1,234.56); no +/- steppers except for “Consecutive deficit years”
-#   • Linked prices redesigned:
-#       – Penalties: user inputs €/VLSFO-eq t (primary); €/tCO₂e auto-updates from live mix.
-#       – Credits:   user inputs €/tCO₂e (primary); €/VLSFO-eq t auto-updates from live mix.
+#   • US-format numbers (1,234.56); no +/- steppers except for “Consecutive deficit years (seed)”
+#   • Linked price inputs (see below priorities)
 #   • Energy breakdown labels bigger & bold; numbers smaller to avoid truncation
 #   • Chart: “Attained GHG” dashed; step labels below/above; compact header & margins
-# Added features (independent pooling & banking; 2025-10-08):
+#
+# Added features (2025-10-08):
 #   • Pooling & Banking are independent (each capped vs pre-adjustment surplus):
 #       – Pooling: +uptake applies as entered (can overshoot); −provide capped to pre-surplus (never flips to deficit).
-#       – Banking: capped to pre-surplus; creates carry-in for next year equal to the final (post-safety-clamp) banked amount.
-#   • Processing order per year: Carry-in → Independent Pooling & Banking (vs pre-surplus) → Safety clamp → €.
+#       – Banking: capped vs pre-surplus; creates carry-in for next year equal to *final* banked amount.
+#   • Start-year selectors for Pooling and Banking (placed just below each input).
+#   • Price linking (one-way priorities, updated automatically without on_change):
+#       – Penalties: user edits €/VLSFO-eq t; €/tCO2e is derived (read-only).
+#       – Credits:   user edits €/tCO2e;   €/VLSFO-eq t is derived (read-only).
+#   • Processing per year: Carry-in → Independent Pooling & Banking (vs pre-surplus) → Safety clamp → €.
+#   • Consecutive-deficit multiplier (automatic): +10% per additional consecutive deficit year; seeded from UI.
 # --------------------------------------------------------------------------------------
 from __future__ import annotations
 
@@ -232,7 +236,6 @@ st.markdown(
     .muted-note{ font-size:.86rem; color:#6b7280; margin:-.05rem 0 .4rem 0; }
     .penalty-label { color: #b91c1c; font-weight: 800; }
     .penalty-note  { color: #b91c1c; font-size: 0.9rem; margin-top:.2rem; }
-    .hint{ font-size:.85rem; color:#374151; margin:.15rem 0 .2rem 0; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -357,7 +360,7 @@ with st.sidebar:
     OPS_MJ  = OPS_kWh * 3.6
     st.divider()
 
-    # Preview factor for €/tCO2e ↔ €/VLSFO-eq t linking (auto on every rerun)
+    # Preview factor for €/tCO2e ↔ €/VLSFO-eq t linking (based on current mix, with 2025 RFNBO reward in denominator)
     if "Extra-EU" in voyage_type:
         energies_preview_fuel_voyage = {
             "HSFO": compute_energy_MJ(HSFO_voy_t,  LCV_HSFO),
@@ -390,51 +393,38 @@ with st.sidebar:
     num_prev = sum(energies_preview_scoped.get(k,0.0) * wtw_preview.get(k,0.0) for k in wtw_preview.keys())
     den_prev = sum(energies_preview_scoped.values())
     E_rfnbo_prev = energies_preview_scoped.get("RFNBO", 0.0)
-    den_prev_rwd = den_prev + E_rfnbo_prev  # r=2
+    den_prev_rwd = den_prev + E_rfnbo_prev  # r=2 in preview
     g_actual_preview = (num_prev / den_prev_rwd) if den_prev_rwd > 0 else 0.0
     factor_vlsfo_per_tco2e = (g_actual_preview * 41_000.0) / 1_000_000.0 if g_actual_preview > 0 else 0.0
     st.session_state["factor_vlsfo_per_tco2e"] = factor_vlsfo_per_tco2e
     st.divider()
 
-    # Credits — PRIMARY = €/tCO2e; derived €/VLSFO-eq t auto-updates from factor
+    # Credits — PRIORITY: €/tCO2e (user edits) → derive €/VLSFO-eq t (read-only)
     st.markdown('<div class="section-title">Compliance Market — Credits</div>', unsafe_allow_html=True)
-    if "credit_per_tco2e_str" not in st.session_state:
-        st.session_state["credit_per_tco2e_str"] = us2(float(_get(DEFAULTS, "credit_per_tco2e", 200.0)))
-
-    credit_per_tco2e = parse_us(st.session_state["credit_per_tco2e_str"], 0.0, 0.0)
-    # auto-derived VLSFO price
-    credit_price_eur_per_vlsfo_t_auto = credit_per_tco2e * factor_vlsfo_per_tco2e if factor_vlsfo_per_tco2e > 0 else 0.0
-
-    c1, c2 = st.columns(2)
-    with c1:
-        st.text_input("Credit price €/tCO₂e (primary)", key="credit_per_tco2e_str")
-    with c2:
-        st.text_input("Credit price €/VLSFO-eq t (auto)", value=us2(credit_price_eur_per_vlsfo_t_auto), disabled=True)
+    credit_per_tco2e = float_text_input("Credit price €/tCO₂e",
+                                        _get(DEFAULTS, "credit_per_tco2e", 200.0),
+                                        key="credit_per_tco2e_str", min_value=0.0)
+    credit_price_eur_per_vlsfo_t = credit_per_tco2e * factor_vlsfo_per_tco2e if factor_vlsfo_per_tco2e > 0 else 0.0
+    st.text_input("Credit price €/VLSFO-eq t (derived)", value=us2(credit_price_eur_per_vlsfo_t), disabled=True)
 
     st.divider()
 
-    # Penalties — PRIMARY = €/VLSFO-eq t (regulated default); derived €/tCO2e auto-updates from factor
+    # Penalties — PRIORITY: €/VLSFO-eq t (user edits) → derive €/tCO2e (read-only)
     st.markdown('<div class="section-title">Compliance Market — Penalties</div>', unsafe_allow_html=True)
     st.markdown('<div class="penalty-note">Regulated default. Change only if regulation changes.</div>', unsafe_allow_html=True)
 
-    if "penalty_per_vlsfo_t_str" not in st.session_state:
-        st.session_state["penalty_per_vlsfo_t_str"] = us2(float(_get(DEFAULTS, "penalty_price_eur_per_vlsfo_t", 2_400.0)))
-
-    penalty_price_eur_per_vlsfo_t = parse_us(st.session_state["penalty_per_vlsfo_t_str"], 2_400.0, 0.0)
-    penalty_price_eur_per_tco2e_auto = (penalty_price_eur_per_vlsfo_t / factor_vlsfo_per_tco2e) if factor_vlsfo_per_tco2e > 0 else 0.0
-
-    p1, p2 = st.columns(2)
-    with p1:
-        st.text_input("Penalty price €/VLSFO-eq t (primary)", key="penalty_per_vlsfo_t_str")
-    with p2:
-        st.text_input("Penalty price €/tCO₂e (auto)", value=us2(penalty_price_eur_per_tco2e_auto), disabled=True)
+    penalty_price_eur_per_vlsfo_t = float_text_input("Penalty price €/VLSFO-eq t",
+                                                     _get(DEFAULTS, "penalty_price_eur_per_vlsfo_t", 2_400.0),
+                                                     key="penalty_per_vlsfo_t_str", min_value=0.0)
+    penalty_price_eur_per_tco2e = (penalty_price_eur_per_vlsfo_t / factor_vlsfo_per_tco2e) if factor_vlsfo_per_tco2e > 0 else 0.0
+    st.text_input("Penalty price €/tCO₂e (derived)", value=us2(penalty_price_eur_per_tco2e), disabled=True)
 
     st.divider()
 
     # Other
     st.markdown('<div class="section-title">Other</div>', unsafe_allow_html=True)
-    consecutive_deficit_years = int(
-        st.number_input("Consecutive deficit years (n)", min_value=1,
+    consecutive_deficit_years_seed = int(
+        st.number_input("Consecutive deficit years (seed)", min_value=1,
                         value=int(_get(DEFAULTS, "consecutive_deficit_years", 1)), step=1)
     )
 
@@ -442,18 +432,26 @@ with st.sidebar:
     st.divider()
     st.markdown('<div class="section-title">Banking & Pooling (tCO₂e)</div>', unsafe_allow_html=True)
 
+    # Pooling input + start year (start-year just below input)
     pooling_tco2e_input = float_text_input_signed(
         "Pooling [tCO₂e]: + uptake tCO2e, − provide tCO2e",
         _get(DEFAULTS, "pooling_tco2e", 0.0),
         key="POOL_T"
     )
+    pooling_start_year = st.selectbox("Pooling starts from year",
+                                      YEARS,
+                                      index=YEARS.index(int(_get(DEFAULTS, "pooling_start_year", YEARS[0]))))
 
+    # Banking input + start year (start-year just below input)
     banking_tco2e_input = float_text_input(
         "Banking to next year [tCO₂e] (capped vs pre-surplus)",
         _get(DEFAULTS, "banking_tco2e", 0.0),
         key="BANK_T",
         min_value=0.0
     )
+    banking_start_year = st.selectbox("Banking starts from year",
+                                      YEARS,
+                                      index=YEARS.index(int(_get(DEFAULTS, "banking_start_year", YEARS[0]))))
 
     # Save defaults
     if st.button("💾 Save current inputs as defaults"):
@@ -472,13 +470,16 @@ with st.sidebar:
             "HSFO_berth_t": HSFO_berth_t, "LFO_berth_t": LFO_berth_t, "MGO_berth_t": MGO_berth_t, "BIO_berth_t": BIO_berth_t, "RFNBO_berth_t": RFNBO_berth_t,
             "LCV_HSFO": LCV_HSFO, "LCV_LFO": LCV_LFO, "LCV_MGO": LCV_MGO, "LCV_BIO": LCV_BIO, "LCV_RFNBO": LCV_RFNBO,
             "WtW_HSFO": WtW_HSFO, "WtW_LFO": WtW_LFO, "WtW_MGO": WtW_MGO, "WtW_BIO": WtW_BIO, "WtW_RFNBO": WtW_RFNBO,
+            # Prices (store authoritative ones)
             "credit_per_tco2e": credit_per_tco2e,
-            "credit_price_eur_per_vlsfo_t": credit_price_eur_per_vlsfo_t_auto,
             "penalty_price_eur_per_vlsfo_t": penalty_price_eur_per_vlsfo_t,
-            "consecutive_deficit_years": consecutive_deficit_years,
+            # Other seeds and starts
+            "consecutive_deficit_years": consecutive_deficit_years_seed,
             "OPS_kWh": OPS_kWh,
             "banking_tco2e": banking_tco2e_input,
             "pooling_tco2e": pooling_tco2e_input,
+            "pooling_start_year": int(pooling_start_year),
+            "banking_start_year": int(banking_start_year),
         }
         try:
             with open(DEFAULTS_PATH, "w", encoding="utf-8") as f:
@@ -573,12 +574,11 @@ st.plotly_chart(fig, use_container_width=True)
 st.caption("ELEC (OPS) is always 100% in scope. For Extra-EU, at-berth fuels are 100% scope; voyage fuels follow the 50% rule with renewables first (BIO, then RFNBO).")
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Results — Banking/Pooling (independent, capped vs pre-surplus)
+# Results — Banking/Pooling (independent, capped vs pre-surplus) + auto deficit multiplier
 # ──────────────────────────────────────────────────────────────────────────────
 st.header("Results (merged per-year table)")
 
 emissions_tco2e = (g_base * E_scope_MJ) / 1e6  # physical
-multiplier = 1.0 + (max(int(consecutive_deficit_years), 1) - 1) / 10.0
 
 cb_raw_t, carry_in_list, cb_eff_t = [], [], []
 pool_applied, bank_applied = [], []
@@ -590,6 +590,9 @@ info_bank_ignored_no_surplus = 0
 info_final_safety_trim = 0
 
 carry = 0.0  # tCO2e banked from previous year only
+
+# Seed the consecutive deficit streak from UI (n): value 1 means no extra; 2→one extra step, etc.
+deficit_streak = max(int(consecutive_deficit_years_seed), 1) - 1
 
 for _, row in LIMITS_DF.iterrows():
     year = int(row["Year"])
@@ -607,27 +610,33 @@ for _, row in LIMITS_DF.iterrows():
     carry_in_list.append(carry)
     cb_eff_t.append(cb_eff)
 
-    # ---------- P O O L I N G  (independent, cap vs pre-surplus) ----------
-    if pooling_tco2e_input >= 0:
-        pool_use = pooling_tco2e_input  # uptake may overshoot
+    # ---------- P O O L I N G  (independent, cap vs pre-surplus; applies only from pooling_start_year) ----------
+    if year >= int(pooling_start_year):
+        if pooling_tco2e_input >= 0:
+            pool_use = pooling_tco2e_input  # uptake can overshoot
+        else:
+            provide_abs = abs(pooling_tco2e_input)
+            pre_surplus = max(cb_eff, 0.0)              # cap vs pre-adjustment surplus
+            applied_provide = min(provide_abs, pre_surplus)
+            if applied_provide < provide_abs:
+                info_provide_capped += 1
+            pool_use = -applied_provide
     else:
-        provide_abs = abs(pooling_tco2e_input)
-        pre_surplus = max(cb_eff, 0.0)              # cap vs pre-adjustment surplus
-        applied_provide = min(provide_abs, pre_surplus)
-        if applied_provide < provide_abs:
-            info_provide_capped += 1
-        pool_use = -applied_provide
+        pool_use = 0.0
 
-    # ---------- B A N K I N G  (independent, cap vs pre-surplus) ----------
-    pre_surplus = max(cb_eff, 0.0)                  # same anchor as for pooling
-    requested_bank = max(banking_tco2e_input, 0.0)
-    bank_use = min(requested_bank, pre_surplus)
-    if requested_bank > pre_surplus:
-        info_bank_capped += 1
-    if pre_surplus == 0.0 and requested_bank > 0.0:
-        info_bank_ignored_no_surplus += 1
+    # ---------- B A N K I N G  (independent, cap vs pre-surplus; applies only from banking_start_year) ----------
+    if year >= int(banking_start_year):
+        pre_surplus = max(cb_eff, 0.0)                  # same anchor as for pooling
+        requested_bank = max(banking_tco2e_input, 0.0)
+        bank_use = min(requested_bank, pre_surplus)
+        if requested_bank > pre_surplus:
+            info_bank_capped += 1
+        if pre_surplus == 0.0 and requested_bank > 0.0:
+            info_bank_ignored_no_surplus += 1
+    else:
+        bank_use = 0.0
 
-    # ---------- F I N A L   B A L A N C E  &  € ----------
+    # ---------- F I N A L   B A L A N C E  &  Safety clamp ----------
     final_bal = cb_eff + pool_use - bank_use
 
     # Safety clamp: never flip a surplus to a deficit (trim bank first, then provide)
@@ -637,6 +646,7 @@ for _, row in LIMITS_DF.iterrows():
         bank_use -= trim_bank
         needed -= trim_bank
         if needed > 0 and pool_use < 0:
+            # Reduce the absolute provide (i.e., provide less)
             pool_use += needed
             needed = 0.0
         final_bal = cb_eff + pool_use - bank_use
@@ -645,24 +655,26 @@ for _, row in LIMITS_DF.iterrows():
     # Carry to next year is the *final* banked amount (after any trims)
     carry_next = bank_use
 
-    final_balance_t.append(final_bal)
+    # ---------- Consecutive-deficit multiplier (automatic) ----------
+    if final_bal < 0:
+        deficit_streak += 1
+    else:
+        deficit_streak = 0
+    multiplier_y = 1.0 + max(deficit_streak - 1, 0) * 0.10  # 1st deficit → 1.0; 2nd → 1.1; 3rd → 1.2; ...
 
-    # Money
+    # ---------- € ----------
     if final_bal > 0:
-        # Prefer €/VLSFO-eq (auto); if zero (e.g., factor=0), fall back to €/tCO2e directly
-        if credit_price_eur_per_vlsfo_t_auto > 0:
-            credit_val = euros_from_tco2e(final_bal, g_att, credit_price_eur_per_vlsfo_t_auto)
-        else:
-            credit_val = final_bal * credit_per_tco2e
+        credit_val = euros_from_tco2e(final_bal, g_att, credit_price_eur_per_vlsfo_t)
         penalty_val = 0.0
     elif final_bal < 0:
-        penalty_val = euros_from_tco2e(-final_bal, g_att, penalty_price_eur_per_vlsfo_t) * multiplier
+        penalty_val = euros_from_tco2e(-final_bal, g_att, penalty_price_eur_per_vlsfo_t) * multiplier_y
         credit_val = 0.0
     else:
         credit_val = penalty_val = 0.0
 
     pool_applied.append(pool_use)
     bank_applied.append(bank_use)
+    final_balance_t.append(final_bal)
     penalties_eur.append(penalty_val)
     credits_eur.append(credit_val)
     net_eur.append(credit_val - penalty_val)
@@ -680,7 +692,7 @@ if info_bank_ignored_no_surplus > 0:
 if info_final_safety_trim > 0:
     st.info(f"Final safety trim applied in {info_final_safety_trim} year(s) to avoid flipping surplus to deficit.")
 
-# Table
+# Table — note the requested column order (Banked_to_Next_Year to the left of CarryIn)
 df_cost = pd.DataFrame(
     {
         "Year": years,
@@ -689,12 +701,12 @@ df_cost = pd.DataFrame(
         "Actual_gCO2e_per_MJ": g_att_list,
         "Emissions_tCO2e": [emissions_tco2e]*len(years),
 
-        "Compliance_Balance_tCO2e": cb_raw_t,
-        "CarryIn_Banked_tCO2e": carry_in_list,
-        "Effective_Balance_tCO2e": cb_eff_t,
-        "Pooling_tCO2e_Applied": pool_applied,
-        "Banked_to_Next_Year_tCO2e": bank_applied,
-        "Final_Balance_tCO2e_for_€": final_balance_t,
+        "Compliance_Balance_tCO2e": cb_raw_t,            # raw
+        "Banked_to_Next_Year_tCO2e": bank_applied,       # final bank applied this year
+        "CarryIn_Banked_tCO2e": carry_in_list,           # from previous year
+        "Effective_Balance_tCO2e": cb_eff_t,             # before adjustments
+        "Pooling_tCO2e_Applied": pool_applied,           # +uptake / −provide (capped vs pre-surplus)
+        "Final_Balance_tCO2e_for_€": final_balance_t,    # after independent pooling & banking (+ safety)
 
         "Penalty_EUR": penalties_eur,
         "Credit_EUR": credits_eur,
