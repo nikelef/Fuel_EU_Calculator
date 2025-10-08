@@ -733,14 +733,12 @@ df_cost = pd.DataFrame(
         "Limit_gCO2e_per_MJ": LIMITS_DF["Limit_gCO2e_per_MJ"].tolist(),
         "Actual_gCO2e_per_MJ": g_att_list,
         "Emissions_tCO2e": [emissions_tco2e]*len(years),
-
         "Compliance_Balance_tCO2e": cb_raw_t,   # raw
         "CarryIn_Banked_tCO2e": carry_in_list,  # from previous year
+        "Banked_to_Next_Year_tCO2e": bank_applied,
         "Effective_Balance_tCO2e": cb_eff_t,    # before adjustments
         "Pooling_tCO2e_Applied": pool_applied,  # +uptake / −provide (capped vs pre-surplus)
-        "Banked_to_Next_Year_tCO2e": bank_applied,
         "Final_Balance_tCO2e_for_€": final_balance_t,  # after independent pooling & banking (+ safety)
-
         "Penalty_EUR": penalties_eur,
         "Credit_EUR": credits_eur,
         "Net_EUR": net_eur,
