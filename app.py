@@ -489,16 +489,16 @@ with st.sidebar:
     # Banking & Pooling (tCO2e) — UI order: Pooling first, then Banking
     st.divider()
     st.markdown('<div class="section-title">Banking & Pooling (tCO₂e)</div>', unsafe_allow_html=True)
-    #st.markdown('<div class="hint">Auto-adjust is active: provide is capped to the available surplus; uptake may overshoot; banking is capped to the post-pooling surplus.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="hint">Auto-adjust is active: provide is capped to the available surplus; uptake may overshoot; banking is capped to the post-pooling surplus.</div>', unsafe_allow_html=True)
 
     pooling_tco2e_input = float_text_input_signed(
-        "Pooling [tCO₂e] +uptake, −provide (auto-adjusted)",
+        "Pooling [tCO₂e] — +uptake, −provide (auto-adjusted)",
         _get(DEFAULTS, "pooling_tco2e", 0.0),
         key="POOL_T"
     )
 
     banking_tco2e_input = float_text_input(
-        "Banking to next year [tCO₂e] (auto-adjusted)",
+        "Banking to next year [tCO₂e] (auto-capped to post-pool surplus)",
         _get(DEFAULTS, "banking_tco2e", 0.0),
         key="BANK_T",
         min_value=0.0
