@@ -486,14 +486,24 @@ with st.sidebar:
                         value=int(_get(DEFAULTS, "consecutive_deficit_years", 1)), step=1)
     )
 
-    # Banking & Pooling inputs
-    st.divider()
-    st.markdown('<div class="section-title">Banking & Pooling (tCO₂e)</div>', unsafe_allow_html=True)
-    banking_tco2e_input = float_text_input("Banking to next year [tCO₂e] (surplus only; applied post-pooling)",
-                                           _get(DEFAULTS, "banking_tco2e", 0.0), key="BANK_T", min_value=0.0)
-    pooling_tco2e_input = float_text_input_signed("Pooling [tCO₂e] — +uptake (deficit only), −provide (surplus only)",
-                                                  _get(DEFAULTS, "pooling_tco2e", 0.0), key="POOL_T")
+# Banking & Pooling (tCO₂e) — UI order: Pooling first, then Banking
+st.divider()
+st.markdown('<div class="section-title">Banking & Pooling (tCO₂e)</div>', unsafe_allow_html=True)
 
+# 1) Pooling first (sign-aware)
+pooling_tco2e_input = float_text_input_signed(
+    "Pooling [tCO₂e]  + uptake (when in deficit), − provide (when in surplus)",
+    _get(DEFAULTS, "pooling_tco2e", 0.0),
+    key="POOL_T"
+)
+
+# 2) Banking second (surplus-only, applied post-pooling)
+banking_tco2e_input = float_text_input(
+    "Banking to next year [tCO₂e] (surplus only; applied post-pooling)",
+    _get(DEFAULTS, "banking_tco2e", 0.0),
+    key="BANK_T",
+    min_value=0.0
+)
     # Save defaults
     if st.button("💾 Save current inputs as defaults"):
         if "Extra-EU" in voyage_type:
