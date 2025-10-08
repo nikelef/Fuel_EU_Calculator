@@ -20,12 +20,18 @@
 #       - Positive = uptake, allowed only when starting in deficit; may overshoot to surplus.
 #       - Negative = provide, allowed only when starting in surplus; capped so surplus never flips to deficit.
 #   • Strict caps & warnings; processing order per year: Carry-in → Pooling → Banking → €.
+# Added feature (Expert mode):
+#   • Mode toggle: “Regulatory-safe (recommended)” vs “Expert (free-form)”.
+#   • Expert mode auto-adjusts to feasible end-states:
+#       - Effective provide = −min(|requested provide|, pre-provide surplus)
+#       - Effective uptake = requested uptake (can overshoot)
+#       - Effective bank  = min(requested bank, post-pool surplus)
 # --------------------------------------------------------------------------------------
 from __future__ import annotations
 
 import json
 import os
-from typing import Dict, Any, List
+from typing import Dict, Any
 
 import numpy as np
 import pandas as pd
@@ -231,6 +237,7 @@ st.markdown(
     .muted-note{ font-size:.86rem; color:#6b7280; margin:-.05rem 0 .4rem 0; }
     .penalty-label { color: #b91c1c; font-weight: 800; }
     .penalty-note  { color: #b91c1c; font-size: 0.9rem; margin-top:.2rem; }
+    .hint{ font-size:.85rem; color:#374151; margin:.15rem 0 .2rem 0; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -486,20 +493,32 @@ with st.sidebar:
                         value=int(_get(DEFAULTS, "consecutive_deficit_years", 1)), step=1)
     )
 
+    # Mode toggle (persisted)
+    mode_options = ["Regulatory-safe (recommended)", "Expert (free-form)"]
+    saved_mode = _get(DEFAULTS, "compliance_mode", mode_options[0])
+    try:
+        mode_idx = mode_options.index(saved_mode)
+    except ValueError:
+        mode_idx = 0
+    compliance_mode = st.radio("Compliance logic mode", mode_options, index=mode_idx)
+    st.markdown(
+        '<div class="hint">Expert mode accepts any inputs and auto-adjusts to feasible outcomes: '
+        'provide is capped to the available surplus; uptake may overshoot; banking is capped to the post-pool surplus.</div>',
+        unsafe_allow_html=True
+    )
+
     # Banking & Pooling (tCO2e) — UI order: Pooling first, then Banking
     st.divider()
     st.markdown('<div class="section-title">Banking & Pooling (tCO₂e)</div>', unsafe_allow_html=True)
 
-    # 1) Pooling first (sign-aware)
     pooling_tco2e_input = float_text_input_signed(
-        "Pooling [tCO₂e] + uptake (when in deficit), - provide (when in surplus)",
+        "Pooling [tCO₂e] — +uptake, −provide",
         _get(DEFAULTS, "pooling_tco2e", 0.0),
         key="POOL_T"
     )
 
-    # 2) Banking second (surplus-only, applied post-pooling)
     banking_tco2e_input = float_text_input(
-        "Banking to next year [tCO₂e] (surplus only; applied post-pooling)",
+        "Banking to next year [tCO₂e]",
         _get(DEFAULTS, "banking_tco2e", 0.0),
         key="BANK_T",
         min_value=0.0
@@ -529,6 +548,7 @@ with st.sidebar:
             "OPS_kWh": OPS_kWh,
             "banking_tco2e": banking_tco2e_input,
             "pooling_tco2e": pooling_tco2e_input,
+            "compliance_mode": compliance_mode,
         }
         try:
             with open(DEFAULTS_PATH, "w", encoding="utf-8") as f:
@@ -623,7 +643,7 @@ st.plotly_chart(fig, use_container_width=True)
 st.caption("ELEC (OPS) is always 100% in scope. For Extra-EU, at-berth fuels are 100% scope; voyage fuels follow the 50% rule with renewables first (BIO, then RFNBO).")
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Results — Banking/Pooling with over-allocation
+# Results — Banking/Pooling with two modes
 # ──────────────────────────────────────────────────────────────────────────────
 st.header("Results (merged per-year table)")
 
@@ -634,11 +654,16 @@ cb_raw_t, carry_in_list, cb_eff_t = [], [], []
 pool_applied, bank_applied = [], []
 final_balance_t, penalties_eur, credits_eur, net_eur, g_att_list = [], [], [], [], []
 
+# Warning/Info counters
 warn_bank_in_nonsurplus = 0
 warn_pool_uptake_in_surplus = 0
 warn_pool_provide_in_deficit = 0
 warn_pool_provide_capped = 0
 warn_no_balance = 0
+
+info_expert_provide_capped = 0
+info_expert_bank_capped = 0
+info_expert_bank_zero_no_surplus = 0
 
 carry = 0.0  # tCO2e banked from previous year
 
@@ -658,47 +683,71 @@ for _, row in LIMITS_DF.iterrows():
     carry_in_list.append(carry)
     cb_eff_t.append(cb_eff)
 
-    # 1) Pooling
+    # ── Apply Pooling & Banking according to mode
     pool_use = 0.0
-    if cb_eff > 0:  # surplus/neutral
-        if pooling_tco2e_input > 0:
-            warn_pool_uptake_in_surplus += 1  # invalid: uptake when surplus
-        elif pooling_tco2e_input < 0:
-            provide_abs = abs(pooling_tco2e_input)
-            # Cap so we never flip to deficit
-            applied_provide = min(provide_abs, cb_eff)
-            if applied_provide < provide_abs:
-                warn_pool_provide_capped += 1
-            pool_use = -applied_provide
-        # else zero, nothing
-    elif cb_eff < 0:  # deficit
-        if pooling_tco2e_input < 0:
-            warn_pool_provide_in_deficit += 1  # cannot provide when in deficit
-        else:
-            # Allow over-allocation: do not cap positive uptake
-            pool_use = max(0.0, pooling_tco2e_input)
-    else:  # exactly zero
-        if pooling_tco2e_input != 0:
-            warn_no_balance += 1
-        pool_use = 0.0
-
-    post_pool = cb_eff + pool_use
-
-    # 2) Banking (only if post-pool surplus)
     bank_use = 0.0
-    if post_pool > 0:
-        bank_use = max(0.0, min(banking_tco2e_input, post_pool))
-        carry_next = bank_use
-    else:
-        if banking_tco2e_input > 0:
-            warn_bank_in_nonsurplus += 1
-        carry_next = 0.0
 
-    # 3) Final balance used for € after pooling & banking
+    if "Expert" in compliance_mode:
+        # Pooling (free-form auto-adjust)
+        if pooling_tco2e_input >= 0:
+            pool_use = pooling_tco2e_input  # uptake can overshoot
+        else:
+            provide_abs = abs(pooling_tco2e_input)
+            pre_surplus = max(cb_eff, 0.0)
+            applied_provide = min(provide_abs, pre_surplus)  # never flip to deficit
+            if applied_provide < provide_abs:
+                info_expert_provide_capped += 1
+            pool_use = -applied_provide
+
+        post_pool = cb_eff + pool_use
+
+        # Banking (auto-capped to post-pool surplus)
+        post_surplus = max(post_pool, 0.0)
+        bank_use = min(max(banking_tco2e_input, 0.0), post_surplus)
+        if banking_tco2e_input > post_surplus:
+            info_expert_bank_capped += 1
+        if post_surplus == 0.0 and banking_tco2e_input > 0.0:
+            info_expert_bank_zero_no_surplus += 1
+        carry_next = bank_use
+
+    else:
+        # Regulatory-safe (guards + warnings)
+        # Pooling
+        if cb_eff > 0:  # surplus/neutral
+            if pooling_tco2e_input > 0:
+                warn_pool_uptake_in_surplus += 1  # invalid: uptake when surplus
+            elif pooling_tco2e_input < 0:
+                provide_abs = abs(pooling_tco2e_input)
+                applied_provide = min(provide_abs, cb_eff)
+                if applied_provide < provide_abs:
+                    warn_pool_provide_capped += 1
+                pool_use = -applied_provide
+        elif cb_eff < 0:  # deficit
+            if pooling_tco2e_input < 0:
+                warn_pool_provide_in_deficit += 1  # cannot provide when in deficit
+            else:
+                pool_use = max(0.0, pooling_tco2e_input)  # allow overshoot
+        else:  # exactly zero
+            if pooling_tco2e_input != 0:
+                warn_no_balance += 1
+            pool_use = 0.0
+
+        post_pool = cb_eff + pool_use
+
+        # Banking (only if post-pool surplus)
+        if post_pool > 0:
+            bank_use = max(0.0, min(banking_tco2e_input, post_pool))
+            carry_next = bank_use
+        else:
+            if banking_tco2e_input > 0:
+                warn_bank_in_nonsurplus += 1
+            carry_next = 0.0
+
+    # Final balance for €
     final_bal = post_pool - bank_use
     final_balance_t.append(final_bal)
 
-    # 4) Money
+    # Money
     if final_bal > 0:
         credit_val = euros_from_tco2e(final_bal, g_att, credit_price_eur_per_vlsfo_t)
         penalty_val = 0.0
@@ -717,17 +766,25 @@ for _, row in LIMITS_DF.iterrows():
     # Prepare next loop
     carry = carry_next
 
-# Warnings
-if warn_bank_in_nonsurplus > 0:
-    st.error(f"Banking ignored in {warn_bank_in_nonsurplus} non-surplus year(s): banking applies only when a surplus exists after pooling.")
-if warn_pool_uptake_in_surplus > 0:
-    st.error(f"Pooling uptake (>0) ignored in {warn_pool_uptake_in_surplus} surplus/neutral year(s): you cannot uptake Pooling since you are already in surplus.")
-if warn_pool_provide_in_deficit > 0:
-    st.error(f"Pooling provide (<0) ignored in {warn_pool_provide_in_deficit} deficit year(s): you cannot provide Pooling to other vessels since you are already in deficit.")
-if warn_pool_provide_capped > 0:
-    st.warning(f"Pooling provide capped in {warn_pool_provide_capped} year(s) to avoid flipping surplus to deficit.")
-if warn_no_balance > 0:
-    st.warning(f"Pooling entered but no surplus/deficit existed in {warn_no_balance} year(s); input ignored.")
+# Messages
+if "Expert" in compliance_mode:
+    if info_expert_provide_capped > 0:
+        st.info(f"Expert mode: pooling provide auto-capped in {info_expert_provide_capped} year(s) to avoid flipping surplus to deficit.")
+    if info_expert_bank_capped > 0:
+        st.info(f"Expert mode: banking auto-capped to post-pool surplus in {info_expert_bank_capped} year(s).")
+    if info_expert_bank_zero_no_surplus > 0:
+        st.info(f"Expert mode: requested banking ignored in {info_expert_bank_zero_no_surplus} year(s) with no post-pool surplus.")
+else:
+    if warn_bank_in_nonsurplus > 0:
+        st.error(f"Banking ignored in {warn_bank_in_nonsurplus} non-surplus year(s): banking applies only when a surplus exists after pooling.")
+    if warn_pool_uptake_in_surplus > 0:
+        st.error(f"Pooling uptake (>0) ignored in {warn_pool_uptake_in_surplus} surplus/neutral year(s): you cannot uptake Pooling since you are already in surplus.")
+    if warn_pool_provide_in_deficit > 0:
+        st.error(f"Pooling provide (<0) ignored in {warn_pool_provide_in_deficit} deficit year(s): you cannot provide Pooling to other vessels since you are already in deficit.")
+    if warn_pool_provide_capped > 0:
+        st.warning(f"Pooling provide capped in {warn_pool_provide_capped} year(s) to avoid flipping surplus to deficit.")
+    if warn_no_balance > 0:
+        st.warning(f"Pooling entered but no surplus/deficit existed in {warn_no_balance} year(s); input ignored.")
 
 # Table
 df_cost = pd.DataFrame(
