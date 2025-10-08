@@ -492,7 +492,7 @@ with st.sidebar:
 
     # 1) Pooling first (sign-aware)
     pooling_tco2e_input = float_text_input_signed(
-        "Pooling [tCO₂e] — +uptake (deficit only), −provide (surplus only)",
+        "Pooling [tCO₂e] "+" uptake (wehn in deficit), "−" provide (when in surplus)",
         _get(DEFAULTS, "pooling_tco2e", 0.0),
         key="POOL_T"
     )
