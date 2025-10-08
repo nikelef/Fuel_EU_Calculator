@@ -14,12 +14,18 @@
 #   • Linked credit/penalty price inputs (€/tCO2e ↔ €/VLSFO-eq t), penalty default 2,400
 #   • Energy breakdown labels bigger & bold; numbers smaller to avoid truncation
 #   • Chart: “Attained GHG” dashed; step labels below/above; compact header & margins
+# Added features (2025-10-08):
+#   • Banking (surplus-only, post-pooling): reduces current-year credit, carries tCO2e to next year.
+#   • Pooling (sign-aware, over-allocation allowed):
+#       - Positive = uptake, allowed only when starting in deficit; may overshoot to surplus.
+#       - Negative = provide, allowed only when starting in surplus; capped so surplus never flips to deficit.
+#   • Strict caps & warnings; processing order per year: Carry-in → Pooling → Banking → €.
 # --------------------------------------------------------------------------------------
 from __future__ import annotations
 
 import json
 import os
-from typing import Dict, Any
+from typing import Dict, Any, List
 
 import numpy as np
 import pandas as pd
@@ -91,49 +97,24 @@ def compute_energy_MJ(mass_t: float, lcv_MJ_per_t: float) -> float:
     lcv = max(float(lcv_MJ_per_t), 0.0)
     return mass_t * lcv
 
-def compute_mix_intensity_g_per_MJ(energies_MJ: dict, wtw_g_per_MJ: dict) -> float:
-    """WtW intensity of a mix; energies_MJ must be IN-SCOPE energies (physical)."""
-    E_total = sum(energies_MJ.values())
-    if E_total <= 0:
-        return 0.0
-    num = 0.0
-    for k, E in energies_MJ.items():
-        num += E * max(float(wtw_g_per_MJ.get(k, 0.0)), 0.0)
-    return num / E_total
-
-def penalty_eur_per_year(
-    g_achieved: float,
-    g_target: float,
-    E_scope_MJ: float,
-    penalty_price_eur_per_vlsfo_t: float,
-) -> float:
+def euros_from_tco2e(balance_tco2e_positive: float, g_attained: float, price_eur_per_vlsfo_t: float) -> float:
     """
-    Penalty = deficit (g) converted to VLSFO-eq tons × penalty_price_eur_per_vlsfo_t.
-    CB_g = (g_target − g_achieved) × E_scope_MJ; if CB_g ≥ 0 → no penalty.
-    VLSFO-eq tons = (−CB_g) / (g_achieved [g/MJ] × 41,000 [MJ/t]).
+    Convert a *positive* tCO2e quantity (surplus for credits, deficit for penalties)
+    to euros using the year's attained GHG intensity.
+    tCO2e per VLSFO-eq ton = (g_attained [g/MJ] * 41,000 [MJ/t]) / 1e6.
     """
-    if E_scope_MJ <= 0 or g_achieved <= 0 or penalty_price_eur_per_vlsfo_t <= 0:
+    if balance_tco2e_positive <= 0 or price_eur_per_vlsfo_t <= 0 or g_attained <= 0:
         return 0.0
-    CB_g = (g_target - g_achieved) * E_scope_MJ
-    if CB_g >= 0:
+    tco2e_per_vlsfot = (g_attained * 41_000.0) / 1_000_000.0
+    if tco2e_per_vlsfot <= 0:
         return 0.0
-    return (-CB_g) / (g_achieved * 41_000.0) * penalty_price_eur_per_vlsfo_t
-
-def credit_eur_per_year(
-    g_achieved: float, g_target: float, E_scope_MJ: float, credit_price_eur_per_vlsfo_t: float
-) -> float:
-    if E_scope_MJ <= 0 or g_achieved <= 0 or credit_price_eur_per_vlsfo_t <= 0:
-        return 0.0
-    CB_g = (g_target - g_achieved) * E_scope_MJ
-    if CB_g <= 0:
-        return 0.0
-    return (CB_g) / (g_achieved * 41_000.0) * credit_price_eur_per_vlsfo_t
+    vlsfo_eq_t = balance_tco2e_positive / tco2e_per_vlsfot
+    return vlsfo_eq_t * price_eur_per_vlsfo_t
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Formatting helpers (US format, 2 decimals)
 # ──────────────────────────────────────────────────────────────────────────────
 def us2(x: float) -> str:
-    """US-format with thousands commas and 2 decimals."""
     try:
         return f"{float(x):,.2f}"
     except Exception:
@@ -146,8 +127,13 @@ def parse_us(s: str, default: float = 0.0, min_value: float = 0.0) -> float:
         val = float(default)
     return max(val, min_value)
 
+def parse_us_any(s: str, default: float = 0.0) -> float:
+    try:
+        return float(str(s).replace(",", ""))
+    except Exception:
+        return float(default)
+
 def float_text_input(label: str, default_val: float, key: str, min_value: float = 0.0) -> float:
-    """Text input that displays and preserves US formatting with 2 decimals (no steppers)."""
     if key not in st.session_state:
         st.session_state[key] = us2(default_val)
     def _normalize():
@@ -155,6 +141,15 @@ def float_text_input(label: str, default_val: float, key: str, min_value: float 
         st.session_state[key] = us2(val)
     st.text_input(label, value=st.session_state[key], key=key, on_change=_normalize, label_visibility="visible")
     return parse_us(st.session_state[key], default=default_val, min_value=min_value)
+
+def float_text_input_signed(label: str, default_val: float, key: str) -> float:
+    if key not in st.session_state:
+        st.session_state[key] = us2(default_val)
+    def _normalize():
+        val = parse_us_any(st.session_state[key], default=default_val)
+        st.session_state[key] = us2(val)
+    st.text_input(label, value=st.session_state[key], key=key, on_change=_normalize, label_visibility="visible")
+    return parse_us_any(st.session_state[key], default=default_val)
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Scoping helpers
@@ -203,7 +198,6 @@ def scoped_energies_extra_eu(energies_fuel_voyage: Dict[str, float],
     else:
         hsfo_attr = lfo_attr = mgo_attr = 0.0
 
-    # Sum into scoped
     scoped["HSFO"] += hsfo_attr
     scoped["LFO"]  += lfo_attr
     scoped["MGO"]  += mgo_attr
@@ -223,20 +217,14 @@ st.caption("Period: 2025–2050 • Limits derived from 2020 baseline 91.16 gCO�
 st.markdown(
     """
     <style>
-    /* Energy breakdown metrics — labels bigger & bold; numbers smaller */
     [data-testid="stMetricLabel"] { font-size: 1.00rem !important; font-weight: 800 !important; color: #111827 !important; }
     [data-testid="stMetricValue"] { font-size: 0.95rem !important; font-weight: 700 !important; line-height: 1.10 !important; }
     [data-testid="stMetric"] { padding: .25rem .40rem !important; }
-
-    /* Sidebar input spacing */
-    section[data-testid="stSidebar"] div.block-container{
-        padding-top: .6rem !important; padding-bottom: .6rem !important;
-    }
+    section[data-testid="stSidebar"] div.block-container{ padding-top: .6rem !important; padding-bottom: .6rem !important; }
     section[data-testid="stSidebar"] [data-testid="stVerticalBlock"]{ gap: .6rem !important; }
     section[data-testid="stSidebar"] [data-testid="column"]{ padding-left:.25rem; padding-right:.25rem; }
     section[data-testid="stSidebar"] label{ font-size: .95rem; margin-bottom: .2rem; font-weight: 600; }
-    section[data-testid="stSidebar"] input[type="text"],
-    section[data-testid="stSidebar"] input[type="number"]{
+    section[data-testid="stSidebar"] input[type="text"], section[data-testid="stSidebar"] input[type="number"]{
         padding: .32rem .55rem; height: 2.0rem; min-height: 2.0rem;
     }
     .section-title{ font-weight:700; font-size:1.0rem; margin:.35rem 0 .25rem 0; }
@@ -259,9 +247,8 @@ with st.sidebar:
     voyage_type = st.radio("Voyage scope", scope_options, index=idx, horizontal=True)
     st.divider()
 
-    # ── Masses UI depends on scope
+    # ── Masses
     if "Extra-EU" in voyage_type:
-        # Voyage masses (excluding at-berth) — subject to 50% with renewables-first
         st.markdown('<div class="section-title">Masses [t] — voyage (excluding at-berth)</div>', unsafe_allow_html=True)
         vm1, vm2 = st.columns(2)
         with vm1:
@@ -283,7 +270,6 @@ with st.sidebar:
                                            key="RFNBO_voy_t", min_value=0.0)
         st.divider()
 
-        # At-berth masses (EU ports) — 100% scope in Extra-EU
         st.markdown('<div class="section-title">At-berth masses [t] (EU ports)</div>', unsafe_allow_html=True)
         st.markdown('<div class="muted-note">100% in scope; particularly relevant for Extra-EU voyages.</div>', unsafe_allow_html=True)
         bm1, bm2 = st.columns(2)
@@ -304,9 +290,7 @@ with st.sidebar:
         with bm5:
             RFNBO_berth_t = float_text_input("RFNBO at berth [t]", _get(DEFAULTS, "RFNBO_berth_t", 0.0),
                                              key="RFNBO_berth_t", min_value=0.0)
-
     else:
-        # Intra-EU: a single combined block (voyage + berth)
         st.markdown('<div class="section-title">Masses [t] — total (voyage + berth)</div>', unsafe_allow_html=True)
         m1, m2 = st.columns(2)
         with m1:
@@ -326,8 +310,6 @@ with st.sidebar:
         with m5:
             RFNBO_total_t = float_text_input("RFNBO [t]" , _get(DEFAULTS, "RFNBO_t", 0.0),
                                              key="RFNBO_total_t", min_value=0.0)
-
-        # Map to voyage/berth for calculations
         HSFO_voy_t, LFO_voy_t, MGO_voy_t, BIO_voy_t, RFNBO_voy_t = HSFO_total_t, LFO_total_t, MGO_total_t, BIO_total_t, RFNBO_total_t
         HSFO_berth_t = LFO_berth_t = MGO_berth_t = BIO_berth_t = RFNBO_berth_t = 0.0
 
@@ -367,13 +349,13 @@ with st.sidebar:
         WtW_RFNBO = float_text_input("RFNBO WtW" , _get(DEFAULTS, "WtW_RFNBO", 20.00), key="WtW_RFNBO", min_value=0.0)
     st.divider()
 
-    # EU OPS electricity — input in kWh; converted to MJ (1 kWh = 3.6 MJ); 100% scope; WtW = 0 g/MJ
+    # EU OPS electricity
     st.markdown('<div class="section-title">EU OPS electricity</div>', unsafe_allow_html=True)
     OPS_kWh = float_text_input("Electricity delivered (kWh)", _get_ops_kwh_default(), key="OPS_kWh", min_value=0.0)
-    OPS_MJ  = OPS_kWh * 3.6  # kWh → MJ
+    OPS_MJ  = OPS_kWh * 3.6
     st.divider()
 
-    # Preview factor for €/tCO2e ↔ €/VLSFO-eq t (based on IN-SCOPE mix incl. ELEC and at-berth fuels, with RFNBO reward as of 2025)
+    # Preview factor for €/tCO2e ↔ €/VLSFO-eq t linking
     if "Extra-EU" in voyage_type:
         energies_preview_fuel_voyage = {
             "HSFO": compute_energy_MJ(HSFO_voy_t,  LCV_HSFO),
@@ -394,7 +376,7 @@ with st.sidebar:
                                                            OPS_MJ)
     else:
         energies_preview_scoped = {
-            "HSFO": compute_energy_MJ(HSFO_voy_t,  LCV_HSFO),  # voy_t == total_t
+            "HSFO": compute_energy_MJ(HSFO_voy_t,  LCV_HSFO),
             "LFO":  compute_energy_MJ(LFO_voy_t,   LCV_LFO),
             "MGO":  compute_energy_MJ(MGO_voy_t,   LCV_MGO),
             "BIO":  compute_energy_MJ(BIO_voy_t,   LCV_BIO),
@@ -403,14 +385,11 @@ with st.sidebar:
         }
 
     wtw_preview = {"HSFO": WtW_HSFO, "LFO": WtW_LFO, "MGO": WtW_MGO, "BIO": WtW_BIO, "RFNBO": WtW_RFNBO, "ELEC": 0.0}
-
-    # Build numerator/denominator for preview and apply 2025 reward (r=2 for RFNBO)
     num_prev = sum(energies_preview_scoped.get(k,0.0) * wtw_preview.get(k,0.0) for k in wtw_preview.keys())
     den_prev = sum(energies_preview_scoped.values())
     E_rfnbo_prev = energies_preview_scoped.get("RFNBO", 0.0)
-    den_prev_rwd = den_prev + E_rfnbo_prev  # r=2 → +1×E_rfnbo
+    den_prev_rwd = den_prev + E_rfnbo_prev  # r=2
     g_actual_preview = (num_prev / den_prev_rwd) if den_prev_rwd > 0 else 0.0
-
     factor_vlsfo_per_tco2e = (g_actual_preview * 41_000.0) / 1_000_000.0 if g_actual_preview > 0 else 0.0
     st.session_state["factor_vlsfo_per_tco2e"] = factor_vlsfo_per_tco2e
     st.divider()
@@ -447,19 +426,16 @@ with st.sidebar:
         st.session_state["credit_sync_guard"] = False
 
     c1, c2 = st.columns(2)
-    with c1:
-        st.text_input("Credit price €/tCO₂e", key="credit_per_tco2e_str", on_change=_sync_from_tco2e)
-    with c2:
-        st.text_input("Credit price €/VLSFO-eq t", key="credit_per_vlsfo_t_str", on_change=_sync_from_vlsfo)
+    with c1: st.text_input("Credit price €/tCO₂e", key="credit_per_tco2e_str", on_change=_sync_from_tco2e)
+    with c2: st.text_input("Credit price €/VLSFO-eq t", key="credit_per_vlsfo_t_str", on_change=_sync_from_vlsfo)
 
     credit_per_tco2e = parse_us(st.session_state["credit_per_tco2e_str"], 0.0, 0.0)
     credit_price_eur_per_vlsfo_t = parse_us(st.session_state["credit_per_vlsfo_t_str"], 0.0, 0.0)
     st.divider()
 
-    # Penalties — linked inputs (red, default 2,400 €/VLSFO-eq t)
+    # Penalties — linked inputs (default 2,400 €/VLSFO-eq t)
     st.markdown('<div class="section-title">Compliance Market — Penalties</div>', unsafe_allow_html=True)
     st.markdown('<div class="penalty-note">Regulated default. Change only if regulation changes.</div>', unsafe_allow_html=True)
-
     if "penalty_per_vlsfo_t_str" not in st.session_state:
         st.session_state["penalty_per_vlsfo_t_str"] = us2(float(_get(DEFAULTS, "penalty_price_eur_per_vlsfo_t", 2_400.0)))
     if "penalty_per_tco2e_str" not in st.session_state:
@@ -503,18 +479,22 @@ with st.sidebar:
     penalty_price_eur_per_vlsfo_t = parse_us(st.session_state["penalty_per_vlsfo_t_str"], 2_400.0, 0.0)
     penalty_price_eur_per_tco2e  = parse_us(st.session_state["penalty_per_tco2e_str"],  0.0, 0.0)
 
-    # Only steppers here
+    # Other
     st.markdown('<div class="section-title">Other</div>', unsafe_allow_html=True)
     consecutive_deficit_years = int(
-        st.number_input(
-            "Consecutive deficit years (n)",
-            min_value=1,
-            value=int(_get(DEFAULTS, "consecutive_deficit_years", 1)),
-            step=1,
-        )
+        st.number_input("Consecutive deficit years (n)", min_value=1,
+                        value=int(_get(DEFAULTS, "consecutive_deficit_years", 1)), step=1)
     )
 
-    # Save defaults (persist both sets so switching is seamless)
+    # Banking & Pooling inputs
+    st.divider()
+    st.markdown('<div class="section-title">Banking & Pooling (tCO₂e)</div>', unsafe_allow_html=True)
+    banking_tco2e_input = float_text_input("Banking to next year [tCO₂e] (surplus only; applied post-pooling)",
+                                           _get(DEFAULTS, "banking_tco2e", 0.0), key="BANK_T", min_value=0.0)
+    pooling_tco2e_input = float_text_input_signed("Pooling [tCO₂e] — +uptake (deficit only), −provide (surplus only)",
+                                                  _get(DEFAULTS, "pooling_tco2e", 0.0), key="POOL_T")
+
+    # Save defaults
     if st.button("💾 Save current inputs as defaults"):
         if "Extra-EU" in voyage_type:
             hsfo_t = HSFO_voy_t + HSFO_berth_t
@@ -523,24 +503,21 @@ with st.sidebar:
             bio_t  = BIO_voy_t  + BIO_berth_t
             rfnbo_t= RFNBO_voy_t+ RFNBO_berth_t
         else:
-            hsfo_t, lfo_t, mgo_t, bio_t, rfnbo_t = HSFO_voy_t, LFO_voy_t, MGO_voy_t, BIO_voy_t, RFNBO_voy_t  # berth zeros
-
+            hsfo_t, lfo_t, mgo_t, bio_t, rfnbo_t = HSFO_voy_t, LFO_voy_t, MGO_voy_t, BIO_voy_t, RFNBO_voy_t
         defaults_to_save = {
             "voyage_type": voyage_type,
-            # Persist both patterns
             "HSFO_t": hsfo_t, "LFO_t": lfo_t, "MGO_t": mgo_t, "BIO_t": bio_t, "RFNBO_t": rfnbo_t,
             "HSFO_voy_t": HSFO_voy_t, "LFO_voy_t": LFO_voy_t, "MGO_voy_t": MGO_voy_t, "BIO_voy_t": BIO_voy_t, "RFNBO_voy_t": RFNBO_voy_t,
             "HSFO_berth_t": HSFO_berth_t, "LFO_berth_t": LFO_berth_t, "MGO_berth_t": MGO_berth_t, "BIO_berth_t": BIO_berth_t, "RFNBO_berth_t": RFNBO_berth_t,
-
             "LCV_HSFO": LCV_HSFO, "LCV_LFO": LCV_LFO, "LCV_MGO": LCV_MGO, "LCV_BIO": LCV_BIO, "LCV_RFNBO": LCV_RFNBO,
             "WtW_HSFO": WtW_HSFO, "WtW_LFO": WtW_LFO, "WtW_MGO": WtW_MGO, "WtW_BIO": WtW_BIO, "WtW_RFNBO": WtW_RFNBO,
-
             "credit_per_tco2e": credit_per_tco2e,
             "credit_price_eur_per_vlsfo_t": credit_price_eur_per_vlsfo_t,
             "penalty_price_eur_per_vlsfo_t": penalty_price_eur_per_vlsfo_t,
             "consecutive_deficit_years": consecutive_deficit_years,
-
-            "OPS_kWh": OPS_kWh,  # save in kWh
+            "OPS_kWh": OPS_kWh,
+            "banking_tco2e": banking_tco2e_input,
+            "pooling_tco2e": pooling_tco2e_input,
         }
         try:
             with open(DEFAULTS_PATH, "w", encoding="utf-8") as f:
@@ -550,9 +527,8 @@ with st.sidebar:
             st.error(f"Could not save defaults: {e}")
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Derived energies & intensity (use IN-SCOPE energies for compliance)
+# Derived energies & intensity (IN-SCOPE for compliance)
 # ──────────────────────────────────────────────────────────────────────────────
-# Build energies from inputs above
 energies_fuel_voyage = {
     "HSFO": compute_energy_MJ(HSFO_voy_t,  LCV_HSFO),
     "LFO":  compute_energy_MJ(LFO_voy_t,   LCV_LFO),
@@ -567,39 +543,35 @@ energies_fuel_berth = {
     "BIO":  compute_energy_MJ(BIO_berth_t,   LCV_BIO),
     "RFNBO":compute_energy_MJ(RFNBO_berth_t, LCV_RFNBO),
 }
-# Totals for display (voyage + berth)
 energies_fuel_full = {k: energies_fuel_voyage.get(k,0.0) + energies_fuel_berth.get(k,0.0) for k in ["HSFO","LFO","MGO","BIO","RFNBO"]}
-# ELEC (OPS) — always 100% scope; WtW = 0
 ELEC_MJ = OPS_MJ
 
-# Build in-scope energies
 if "Extra-EU" in voyage_type:
     scoped_energies = scoped_energies_extra_eu(energies_fuel_voyage, energies_fuel_berth, ELEC_MJ)
-else:  # Intra-EU
+else:
     scoped_energies = {**energies_fuel_full, "ELEC": ELEC_MJ}
 
-# Totals for display
-energies_full = {**energies_fuel_full, "ELEC": ELEC_MJ}  # for total MJ readouts
+energies_full = {**energies_fuel_full, "ELEC": ELEC_MJ}
 wtw = {"HSFO": WtW_HSFO, "LFO": WtW_LFO, "MGO": WtW_MGO, "BIO": WtW_BIO, "RFNBO": WtW_RFNBO, "ELEC": 0.0}
 
 E_total_MJ = sum(energies_full.values())
 E_scope_MJ = sum(scoped_energies.values())
 
-# Base (physical) achieved intensity — no reward
 num_phys = sum(scoped_energies.get(k,0.0) * wtw.get(k,0.0) for k in wtw.keys())
 den_phys = E_scope_MJ
 g_base = (num_phys / den_phys) if den_phys > 0 else 0.0
 
-# RFNBO-rewarded attained intensity per year (r=2 for RFNBO until 2033; denominator only)
 E_rfnbo_scope = scoped_energies.get("RFNBO", 0.0)
 def attained_intensity_for_year(y: int) -> float:
     if den_phys <= 0:
         return 0.0
     r = 2.0 if y <= 2033 else 1.0
-    den_rwd = den_phys + (r - 1.0) * E_rfnbo_scope  # add +E_rfnbo when r=2
+    den_rwd = den_phys + (r - 1.0) * E_rfnbo_scope
     return num_phys / den_rwd if den_rwd > 0 else 0.0
 
-# Top-of-page breakdown (labels bigger & bold; numbers smaller per CSS above)
+# ──────────────────────────────────────────────────────────────────────────────
+# Top breakdown
+# ──────────────────────────────────────────────────────────────────────────────
 st.subheader("Energy breakdown (MJ)")
 cA, cB, cC, cD, cE, cF, cG, cH = st.columns(8)
 with cA: st.metric("Total energy (all)", f"{us2(E_total_MJ)} MJ")
@@ -612,112 +584,164 @@ with cG: st.metric("BIO — in scope", f"{us2(scoped_energies.get('BIO',0))} MJ"
 with cH: st.metric("RFNBO — in scope", f"{us2(scoped_energies.get('RFNBO',0))} MJ")
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Plot — GHG Intensity vs Limit (step labels below limit; attained dashed with labels)
+# Plot
 # ──────────────────────────────────────────────────────────────────────────────
 st.markdown('<h2 style="margin:0 0 .25rem 0;">GHG Intensity vs. FuelEU Limit (2025–2050)</h2>', unsafe_allow_html=True)
-
-limit_series = LIMITS_DF["Limit_gCO2e_per_MJ"].tolist()
 years = LIMITS_DF["Year"].tolist()
+limit_series = LIMITS_DF["Limit_gCO2e_per_MJ"].tolist()
 actual_series = [attained_intensity_for_year(y) for y in years]
-
-# Show labels at official step-change years
 step_years = [2025, 2030, 2035, 2040, 2045, 2050]
-
-# Labels BELOW the limit line & ABOVE the attained dashed line
 limit_text = [f"{limit_series[i]:,.2f}" if years[i] in step_years else "" for i in range(len(years))]
 attained_text = [f"{actual_series[i]:,.2f}" if years[i] in step_years else "" for i in range(len(years))]
 
 fig = go.Figure()
-# Limit (step) — solid, labels below
-fig.add_trace(
-    go.Scatter(
-        x=years,
-        y=limit_series,
-        name="FuelEU Limit (step)",
-        mode="lines+markers+text",
-        line=dict(shape="hv", width=3),
-        text=limit_text,
-        textposition="bottom center",
-        textfont=dict(size=12),
-        hovertemplate="Year=%{x}<br>Limit=%{y:,.2f} gCO₂e/MJ<extra></extra>",
-    )
-)
-# Attained GHG — dashed, labels above
-fig.add_trace(
-    go.Scatter(
-        x=years,
-        y=actual_series,
-        name="Attained GHG",
-        mode="lines+text",
-        line=dict(dash="dash", width=3),
-        text=attained_text,
-        textposition="top center",
-        textfont=dict(size=12),
-        hovertemplate="Year=%{x}<br>Attained=%{y:,.2f} gCO₂e/MJ<extra></extra>",
-    )
-)
-
+fig.add_trace(go.Scatter(x=years, y=limit_series, name="FuelEU Limit (step)",
+                         mode="lines+markers+text", line=dict(shape="hv", width=3),
+                         text=limit_text, textposition="bottom center", textfont=dict(size=12),
+                         hovertemplate="Year=%{x}<br>Limit=%{y:,.2f} gCO₂e/MJ<extra></extra>"))
+fig.add_trace(go.Scatter(x=years, y=actual_series, name="Attained GHG",
+                         mode="lines+text", line=dict(dash="dash", width=3),
+                         text=attained_text, textposition="top center", textfont=dict(size=12),
+                         hovertemplate="Year=%{x}<br>Attained=%{y:,.2f} gCO₂e/MJ<extra></extra>"))
 fig.update_yaxes(tickformat=",.2f")
-fig.update_layout(
-    xaxis_title="Year",
-    yaxis_title="GHG Intensity [gCO₂e/MJ]",
-    hovermode="x unified",
-    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1.0),
-    margin=dict(l=40, r=20, t=50, b=40),  # compact gap above plot
-)
+fig.update_layout(xaxis_title="Year", yaxis_title="GHG Intensity [gCO₂e/MJ]",
+                  hovermode="x unified",
+                  legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1.0),
+                  margin=dict(l=40, r=20, t=50, b=40))
 st.plotly_chart(fig, use_container_width=True)
 st.caption("ELEC (OPS) is always 100% in scope. For Extra-EU, at-berth fuels are 100% scope; voyage fuels follow the 50% rule with renewables first (BIO, then RFNBO).")
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Results — merged per-year table (US format, 2 decimals; Year excluded from formatting)
+# Results — Banking/Pooling with over-allocation
 # ──────────────────────────────────────────────────────────────────────────────
 st.header("Results (merged per-year table)")
 
-# Physical emissions (no reward)
-emissions_tco2e = (g_base * E_scope_MJ) / 1e6  # tCO2e
-
-penalties_eur, credits_eur, net_eur, cb_t, g_att_list = [], [], [], [], []
+emissions_tco2e = (g_base * E_scope_MJ) / 1e6  # physical
 multiplier = 1.0 + (max(int(consecutive_deficit_years), 1) - 1) / 10.0
+
+cb_raw_t, carry_in_list, cb_eff_t = [], [], []
+pool_applied, bank_applied = [], []
+final_balance_t, penalties_eur, credits_eur, net_eur, g_att_list = [], [], [], [], []
+
+warn_bank_in_nonsurplus = 0
+warn_pool_uptake_in_surplus = 0
+warn_pool_provide_in_deficit = 0
+warn_pool_provide_capped = 0
+warn_no_balance = 0
+
+carry = 0.0  # tCO2e banked from previous year
 
 for _, row in LIMITS_DF.iterrows():
     year = int(row["Year"])
     g_target = float(row["Limit_gCO2e_per_MJ"])
-
     g_att = attained_intensity_for_year(year)
     g_att_list.append(g_att)
 
+    # Raw compliance balance (no carry)
     CB_g = (g_target - g_att) * E_scope_MJ
-    CB_t = CB_g / 1e6
-    cb_t.append(CB_t)
+    CB_t_raw = CB_g / 1e6
+    cb_raw_t.append(CB_t_raw)
 
-    pen = penalty_eur_per_year(
-        g_achieved=g_att,
-        g_target=g_target,
-        E_scope_MJ=E_scope_MJ,
-        penalty_price_eur_per_vlsfo_t=penalty_price_eur_per_vlsfo_t,
-    ) * multiplier
-    penalties_eur.append(pen)
+    # Effective before adjustments: add carry-in
+    cb_eff = CB_t_raw + carry
+    carry_in_list.append(carry)
+    cb_eff_t.append(cb_eff)
 
-    cred = credit_eur_per_year(g_att, g_target, E_scope_MJ, credit_price_eur_per_vlsfo_t)
-    credits_eur.append(cred)
-    net_eur.append(cred - pen)
+    # 1) Pooling
+    pool_use = 0.0
+    if cb_eff > 0:  # surplus/neutral
+        if pooling_tco2e_input > 0:
+            warn_pool_uptake_in_surplus += 1  # invalid: uptake when surplus
+        elif pooling_tco2e_input < 0:
+            provide_abs = abs(pooling_tco2e_input)
+            # Cap so we never flip to deficit
+            applied_provide = min(provide_abs, cb_eff)
+            if applied_provide < provide_abs:
+                warn_pool_provide_capped += 1
+            pool_use = -applied_provide
+        # else zero, nothing
+    elif cb_eff < 0:  # deficit
+        if pooling_tco2e_input < 0:
+            warn_pool_provide_in_deficit += 1  # cannot provide when in deficit
+        else:
+            # Allow over-allocation: do not cap positive uptake
+            pool_use = max(0.0, pooling_tco2e_input)
+    else:  # exactly zero
+        if pooling_tco2e_input != 0:
+            warn_no_balance += 1
+        pool_use = 0.0
 
+    post_pool = cb_eff + pool_use
+
+    # 2) Banking (only if post-pool surplus)
+    bank_use = 0.0
+    if post_pool > 0:
+        bank_use = max(0.0, min(banking_tco2e_input, post_pool))
+        carry_next = bank_use
+    else:
+        if banking_tco2e_input > 0:
+            warn_bank_in_nonsurplus += 1
+        carry_next = 0.0
+
+    # 3) Final balance used for € after pooling & banking
+    final_bal = post_pool - bank_use
+    final_balance_t.append(final_bal)
+
+    # 4) Money
+    if final_bal > 0:
+        credit_val = euros_from_tco2e(final_bal, g_att, credit_price_eur_per_vlsfo_t)
+        penalty_val = 0.0
+    elif final_bal < 0:
+        penalty_val = euros_from_tco2e(-final_bal, g_att, penalty_price_eur_per_vlsfo_t) * multiplier
+        credit_val = 0.0
+    else:
+        credit_val = penalty_val = 0.0
+
+    pool_applied.append(pool_use)
+    bank_applied.append(bank_use)
+    penalties_eur.append(penalty_val)
+    credits_eur.append(credit_val)
+    net_eur.append(credit_val - penalty_val)
+
+    # Prepare next loop
+    carry = carry_next
+
+# Warnings
+if warn_bank_in_nonsurplus > 0:
+    st.error(f"Banking ignored in {warn_bank_in_nonsurplus} non-surplus year(s): banking applies only when a surplus exists after pooling.")
+if warn_pool_uptake_in_surplus > 0:
+    st.error(f"Pooling uptake (>0) ignored in {warn_pool_uptake_in_surplus} surplus/neutral year(s): you cannot uptake Pooling since you are already in surplus.")
+if warn_pool_provide_in_deficit > 0:
+    st.error(f"Pooling provide (<0) ignored in {warn_pool_provide_in_deficit} deficit year(s): you cannot provide Pooling to other vessels since you are already in deficit.")
+if warn_pool_provide_capped > 0:
+    st.warning(f"Pooling provide capped in {warn_pool_provide_capped} year(s) to avoid flipping surplus to deficit.")
+if warn_no_balance > 0:
+    st.warning(f"Pooling entered but no surplus/deficit existed in {warn_no_balance} year(s); input ignored.")
+
+# Table
 df_cost = pd.DataFrame(
     {
         "Year": years,
-        "Compliance_Balance_tCO2e": cb_t,
+        "Reduction_%": LIMITS_DF["Reduction_%"].tolist(),
+        "Limit_gCO2e_per_MJ": LIMITS_DF["Limit_gCO2e_per_MJ"].tolist(),
+        "Actual_gCO2e_per_MJ": g_att_list,
+        "Emissions_tCO2e": [emissions_tco2e]*len(years),
+
+        "Compliance_Balance_tCO2e": cb_raw_t,   # raw
+        "CarryIn_Banked_tCO2e": carry_in_list,  # from previous year
+        "Effective_Balance_tCO2e": cb_eff_t,    # before adjustments
+        "Pooling_tCO2e_Applied": pool_applied,  # +uptake / −provide
+        "Banked_to_Next_Year_tCO2e": bank_applied,
+        "Final_Balance_tCO2e_for_€": final_balance_t,  # after pooling & banking
+
         "Penalty_EUR": penalties_eur,
         "Credit_EUR": credits_eur,
         "Net_EUR": net_eur,
     }
 )
 
-df_results = LIMITS_DF[["Year", "Reduction_%", "Limit_gCO2e_per_MJ"]].copy()
-df_results["Actual_gCO2e_per_MJ"] = g_att_list             # per-year, with RFNBO reward through 2033
-df_results["Emissions_tCO2e"] = emissions_tco2e            # physical, constant for the mix
-df_results = df_results.merge(df_cost, on="Year", how="left")
-
-df_fmt = df_results.copy()
+# US-format (except Year)
+df_fmt = df_cost.copy()
 for col in df_fmt.columns:
     if col != "Year":
         df_fmt[col] = df_fmt[col].apply(us2)
