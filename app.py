@@ -545,9 +545,8 @@ with cF: st.metric("Fossil — in scope", f"{us2(scoped_energies.get('HSFO',0)+s
 with cG: st.metric("BIO — in scope", f"{us2(scoped_energies.get('BIO',0))} MJ")
 with cH: st.metric("RFNBO — in scope", f"{us2(scoped_energies.get('RFNBO',0))} MJ")
 
-
 # ──────────────────────────────────────────────────────────────────────────────
-# Visual — Two stacked columns: All energy vs In-scope energy
+# Visual — Two stacked columns: All energy vs In-scope energy (ELEC at bottom)
 # Paste after the top metrics and before the line plot
 # ──────────────────────────────────────────────────────────────────────────────
 st.markdown('<h2 style="margin:0 0 .25rem 0;">Energy composition — all vs in-scope</h2>',
@@ -555,34 +554,34 @@ st.markdown('<h2 style="margin:0 0 .25rem 0;">Energy composition — all vs in-s
 
 categories = ["All energy", "In-scope energy"]
 
-# Stack order (bottom→top) as requested; ELEC shown at the very top
+# Stack order (bottom→top): ELEC first at the bottom, then RFNBO, BIO, HSFO, LFO, MGO
 stack_layers = [
+    ("ELEC",  "ELEC (OPS)"),
     ("RFNBO", "RFNBO"),
     ("BIO",   "BIO"),
     ("HSFO",  "HSFO"),
     ("LFO",   "LFO"),
     ("MGO",   "MGO"),
-    ("ELEC",  "ELEC (OPS)"),
 ]
 
 # Left column (all energy = voyage + berth + OPS)
 left_vals = {
+    "ELEC":  ELEC_MJ,
     "RFNBO": energies_fuel_full.get("RFNBO", 0.0),
     "BIO":   energies_fuel_full.get("BIO",   0.0),
     "HSFO":  energies_fuel_full.get("HSFO",  0.0),
     "LFO":   energies_fuel_full.get("LFO",   0.0),
     "MGO":   energies_fuel_full.get("MGO",   0.0),
-    "ELEC":  ELEC_MJ,
 }
 
 # Right column (in-scope only, per allocator)
 right_vals = {
+    "ELEC":  scoped_energies.get("ELEC",  0.0),  # always fully in scope
     "RFNBO": scoped_energies.get("RFNBO", 0.0),
     "BIO":   scoped_energies.get("BIO",   0.0),
     "HSFO":  scoped_energies.get("HSFO",  0.0),
     "LFO":   scoped_energies.get("LFO",   0.0),
     "MGO":   scoped_energies.get("MGO",   0.0),
-    "ELEC":  scoped_energies.get("ELEC",  0.0),  # always fully in scope
 }
 
 fig_stacks = go.Figure()
@@ -622,10 +621,9 @@ fig_stacks.update_layout(
 st.plotly_chart(fig_stacks, use_container_width=True)
 
 if "Extra-EU" in voyage_type:
-    st.caption("Left = total energy (voyage + at-berth + OPS). Right = in-scope energy per the renewables-first allocator (RFNBO/BIO) and 50% voyage rule; OPS is always in scope.")
+    st.caption("Left = total energy (voyage + at-berth + OPS). Right = in-scope energy per the renewables-first allocator and 50% voyage rule; OPS is always in scope.")
 else:
-    st.caption("Intra-EU: all energy is in scope, so the right column should match the left (no out-of-scope portion).")
-
+    st.caption("Intra-EU: all energy is in scope; the right column mirrors the left.")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
