@@ -644,14 +644,14 @@ fig_stacks.add_annotation(
     text=f"{us2(total_scope)} MJ", showarrow=False, yshift=10, font=dict(size=12)
 )
 
-# Dashed connectors joining the CENTER of each layer + % labels
+# Dashed connectors joining the CENTER of each layer + % labels (with arrowheads to right stack)
 cum_left = 0.0
 cum_right = 0.0
 for key, label in stack_layers:
     layer_left = float(left_vals.get(key, 0.0))
     layer_right = float(right_vals.get(key, 0.0))
 
-    # Skip only if both sides zero
+    # Skip if nothing on both sides
     if layer_left <= 0.0 and layer_right <= 0.0:
         cum_left += layer_left
         cum_right += layer_right
@@ -661,7 +661,7 @@ for key, label in stack_layers:
     y_center_left = cum_left + (layer_left / 2.0)
     y_center_right = cum_right + (layer_right / 2.0)
 
-    # Connector: dashed line from left layer center to right layer center
+    # 1) Dashed connector line (visual “flow” guide)
     fig_stacks.add_trace(
         go.Scatter(
             x=categories,
@@ -673,10 +673,20 @@ for key, label in stack_layers:
         )
     )
 
+    # 2) Arrow overlay that points to the right stack center
+    fig_stacks.add_annotation(
+        x=categories[1], y=y_center_right,      # arrow tip (right stack center)
+        ax=categories[0], ay=y_center_left,     # arrow tail (left stack center)
+        xref="x", yref="y", axref="x", ayref="y",
+        text="", showarrow=True,
+        arrowhead=3, arrowsize=1.2, arrowwidth=2,
+        arrowcolor="rgba(0,0,0,0.65)"
+    )
+
     # Percentage label = in-scope share of this fuel layer
     if layer_left > 0:
         pct = (layer_right / layer_left) * 100.0
-        pct = max(min(pct, 100.0), 0.0)  # clamp to [0,100]
+        pct = max(min(pct, 100.0), 0.0)
     else:
         pct = 100.0
 
@@ -696,6 +706,7 @@ for key, label in stack_layers:
     # Update cumulative sums for next layer
     cum_left += layer_left
     cum_right += layer_right
+
 
 fig_stacks.update_layout(
     barmode="stack",
