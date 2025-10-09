@@ -9,7 +9,7 @@
 #         2) Fill the pool (without changing its total) by WtW priority:
 #            a) Renewables (RFNBO vs BIO): lower WtW first, up to their full energy (voy+berth).
 #            b) Fossil at-berth (HSFO, LFO, MGO): ascending WtW.
-#            c) Fossil voyage  (HSFO, LFO, MGO): ascending WtW.
+#            c) Fossil voyage  (HSFO, LFO, MGO): ascending WtW, **capped at 50% per fuel**.
 # RFNBO reward:
 #   • Until end-2033, RFNBO gets a ×2 reward in the intensity denominator (compliance only, not physical emissions).
 # UI/formatting:
@@ -174,8 +174,8 @@ def scoped_energies_extra_eu(energies_fuel_voyage: Dict[str, float],
       • Build one in-scope fuel pool: ELEC (100%) + at-berth fuels (100%) + 50% of *total* voyage fuels
       • Re-fill the pool (without changing its total) by WtW priority:
           1) Renewables (RFNBO vs BIO): lower WtW first, take up to their full energy (voy+berth)
-          2) Fossil at-berth by WtW
-          3) Fossil voyage  by WtW
+          2) Fossil at-berth by WtW (HSFO/LFO/MGO)
+          3) Fossil voyage by WtW (HSFO/LFO/MGO), **each capped at 50% of its voyage energy**
       • ELEC is always 100% in-scope and excluded from the competition.
     """
     def g(d, k): return float(d.get(k, 0.0))
@@ -196,7 +196,7 @@ def scoped_energies_extra_eu(energies_fuel_voyage: Dict[str, float],
     ren = ["RFNBO", "BIO"]
     ren_sorted = sorted(ren, key=lambda f: wtw.get(f, float("inf")))
     for f in ren_sorted:
-        amt = g(energies_fuel_voyage, f) + g(energies_fuel_berth, f)
+        amt = g(energies_fuel_voyage, f) + g(energies_fuel_berth, f)  # 100% (voy+berth), constrained by remaining
         take = min(amt, remaining)
         if take > 0:
             scoped[f] += take
@@ -204,11 +204,11 @@ def scoped_energies_extra_eu(energies_fuel_voyage: Dict[str, float],
         if remaining <= 0:
             return scoped
 
-    # 2) Fossil at-berth by WtW (HSFO/LFO/MGO)
+    # 2) Fossil at-berth by WtW (HSFO/LFO/MGO) — 100%
     fossils = ["HSFO", "LFO", "MGO"]
     foss_sorted = sorted(fossils, key=lambda f: wtw.get(f, float("inf")))
     for f in foss_sorted:
-        amt = g(energies_fuel_berth, f)
+        amt = g(energies_fuel_berth, f)  # 100% at-berth
         take = min(amt, remaining)
         if take > 0:
             scoped[f] += take
@@ -216,9 +216,9 @@ def scoped_energies_extra_eu(energies_fuel_voyage: Dict[str, float],
         if remaining <= 0:
             return scoped
 
-    # 3) Fossil voyage by WtW
+    # 3) Fossil voyage by WtW — **cap each at 50% of its voyage energy**
     for f in foss_sorted:
-        amt = g(energies_fuel_voyage, f)
+        amt = 0.5 * g(energies_fuel_voyage, f)  # per-fuel 50% cap
         take = min(amt, remaining)
         if take > 0:
             scoped[f] += take
@@ -721,7 +721,7 @@ fig_stacks.update_layout(
 st.plotly_chart(fig_stacks, use_container_width=True)
 
 if "Extra-EU" in voyage_type:
-    st.caption("Left = total energy (voyage + at-berth + OPS). Right = in-scope energy after WtW-prioritized allocation: RFNBO/BIO first, then at-berth fossils, then voyage fossils; OPS is always in scope. Bars ordered by ELEC then ascending WtW.")
+    st.caption("Left = total energy (voyage + at-berth + OPS). Right = in-scope energy after WtW-prioritized allocation: RFNBO/BIO first, then at-berth fossils, then voyage fossils (each capped at 50%); OPS is always in scope. Bars ordered by ELEC then ascending WtW.")
 else:
     st.caption("Intra-EU: all energy is in scope. Bars ordered by ELEC then ascending WtW; dashed labels should read 100% for each fuel.")
 
