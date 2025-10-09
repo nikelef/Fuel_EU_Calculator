@@ -3,7 +3,13 @@
 #   • Intra-EU: 100% of fuels + 100% of EU OPS electricity (WtW = 0)
 #   • Extra-EU: EU OPS electricity 100%; fuels split into:
 #       – At-berth fuels (EU ports): 100% scope
-#       – Voyage fuels: 50% scope with “Renewables first (BIO then RFNBO); fossil fills remainder pro-rata”
+#       – Voyage fuels: 50% scope
+#     ⤷ Requested allocator (WtW-prioritized, pool-then-fill):
+#         1) Build in-scope fuel pool = 100% at-berth fuels + 50% of total voyage fuels (ELEC always 100% in scope).
+#         2) Fill the pool (without changing its total) by WtW priority:
+#            a) Renewables (RFNBO vs BIO): lower WtW first, up to their full energy (voy+berth).
+#            b) Fossil at-berth (HSFO, LFO, MGO): ascending WtW.
+#            c) Fossil voyage  (HSFO, LFO, MGO): ascending WtW.
 # RFNBO reward:
 #   • Until end-2033, RFNBO gets a ×2 reward in the intensity denominator (compliance only, not physical emissions).
 # UI/formatting:
@@ -161,53 +167,65 @@ def float_text_input_signed(label: str, default_val: float, key: str) -> float:
 # ──────────────────────────────────────────────────────────────────────────────
 def scoped_energies_extra_eu(energies_fuel_voyage: Dict[str, float],
                              energies_fuel_berth: Dict[str, float],
-                             elec_MJ: float) -> Dict[str, float]:
+                             elec_MJ: float,
+                             wtw: Dict[str, float]) -> Dict[str, float]:
     """
-    Extra-EU scope:
-      • 100% scope for at-berth fuels (EU ports) + ELEC (OPS)
-      • 50% scope for VOYAGE fuels with Renewables first (BIO then RFNBO); fossil fills remainder pro-rata
+    Extra-EU (requested variant):
+      • Build one in-scope fuel pool: ELEC (100%) + at-berth fuels (100%) + 50% of *total* voyage fuels
+      • Re-fill the pool (without changing its total) by WtW priority:
+          1) Renewables (RFNBO vs BIO): lower WtW first, take up to their full energy (voy+berth)
+          2) Fossil at-berth (HSFO, LFO, MGO): ascending WtW
+          3) Fossil voyage  (HSFO, LFO, MGO): ascending WtW
+      • ELEC is always 100% in-scope and excluded from the competition.
     """
-    scoped = {
-        "HSFO": energies_fuel_berth.get("HSFO", 0.0),
-        "LFO":  energies_fuel_berth.get("LFO",  0.0),
-        "MGO":  energies_fuel_berth.get("MGO",  0.0),
-        "BIO":  energies_fuel_berth.get("BIO",  0.0),
-        "RFNBO":energies_fuel_berth.get("RFNBO",0.0),
-        "ELEC": elec_MJ,
-    }
+    def g(d, k): return float(d.get(k, 0.0))
 
-    fuel_voy_tot = sum(energies_fuel_voyage.values())
-    half_scope   = 0.5 * fuel_voy_tot
+    # Totals
+    total_voy = sum(energies_fuel_voyage.values())
+    half_voy  = 0.5 * total_voy
+    total_berth = sum(energies_fuel_berth.values())
 
-    # Renewables pool with BIO priority, then RFNBO
-    bio_v    = energies_fuel_voyage.get("BIO",   0.0)
-    rfnbo_v  = energies_fuel_voyage.get("RFNBO", 0.0)
-    ren_total = bio_v + rfnbo_v
+    # Total in-scope pool (fuels only) + ELEC = fixed
+    pool_total = total_berth + half_voy
+    scoped = {k: 0.0 for k in ["HSFO","LFO","MGO","BIO","RFNBO","ELEC"]}
+    scoped["ELEC"] = max(elec_MJ, 0.0)
 
-    ren_attr = min(ren_total, half_scope)
-    bio_attr   = min(bio_v, ren_attr)
-    rfnbo_attr = ren_attr - bio_attr
+    remaining = pool_total  # fuels only; ELEC already set aside
 
-    remainder = half_scope - ren_attr
+    # 1) Renewables: choose order by lower WtW first
+    ren = ["RFNBO", "BIO"]
+    ren_sorted = sorted(ren, key=lambda f: wtw.get(f, float("inf")))
+    for f in ren_sorted:
+        amt = g(energies_fuel_voyage, f) + g(energies_fuel_berth, f)
+        take = min(amt, remaining)
+        if take > 0:
+            scoped[f] += take
+            remaining -= take
+        if remaining <= 0:
+            return scoped
 
-    # Fossil remainder pro-rata
-    hsfo_v = energies_fuel_voyage.get("HSFO", 0.0)
-    lfo_v  = energies_fuel_voyage.get("LFO",  0.0)
-    mgo_v  = energies_fuel_voyage.get("MGO",  0.0)
-    foss_v = hsfo_v + lfo_v + mgo_v
+    # 2) Fossil at-berth by WtW (HSFO/LFO/MGO)
+    fossils = ["HSFO", "LFO", "MGO"]
+    foss_sorted = sorted(fossils, key=lambda f: wtw.get(f, float("inf")))
+    for f in foss_sorted:
+        amt = g(energies_fuel_berth, f)
+        take = min(amt, remaining)
+        if take > 0:
+            scoped[f] += take
+            remaining -= take
+        if remaining <= 0:
+            return scoped
 
-    if foss_v > 0 and remainder > 0:
-        hsfo_attr = remainder * (hsfo_v / foss_v)
-        lfo_attr  = remainder * (lfo_v  / foss_v)
-        mgo_attr  = remainder * (mgo_v  / foss_v)
-    else:
-        hsfo_attr = lfo_attr = mgo_attr = 0.0
+    # 3) Fossil voyage by WtW
+    for f in foss_sorted:
+        amt = g(energies_fuel_voyage, f)
+        take = min(amt, remaining)
+        if take > 0:
+            scoped[f] += take
+            remaining -= take
+        if remaining <= 0:
+            return scoped
 
-    scoped["HSFO"] += hsfo_attr
-    scoped["LFO"]  += lfo_attr
-    scoped["MGO"]  += mgo_attr
-    scoped["BIO"]  += bio_attr
-    scoped["RFNBO"]+= rfnbo_attr
     return scoped
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -376,9 +394,13 @@ with st.sidebar:
             "BIO":  compute_energy_MJ(BIO_berth_t,   LCV_BIO),
             "RFNBO":compute_energy_MJ(RFNBO_berth_t, LCV_RFNBO),
         }
-        energies_preview_scoped = scoped_energies_extra_eu(energies_preview_fuel_voyage,
-                                                           energies_preview_fuel_berth,
-                                                           OPS_MJ)
+        wtw_preview = {"HSFO": WtW_HSFO, "LFO": WtW_LFO, "MGO": WtW_MGO, "BIO": WtW_BIO, "RFNBO": WtW_RFNBO, "ELEC": 0.0}
+        energies_preview_scoped = scoped_energies_extra_eu(
+            energies_preview_fuel_voyage,
+            energies_preview_fuel_berth,
+            OPS_MJ,
+            wtw_preview
+        )
     else:
         energies_preview_scoped = {
             "HSFO": compute_energy_MJ(HSFO_voy_t,  LCV_HSFO),
@@ -508,13 +530,18 @@ energies_fuel_berth = {
 energies_fuel_full = {k: energies_fuel_voyage.get(k,0.0) + energies_fuel_berth.get(k,0.0) for k in ["HSFO","LFO","MGO","BIO","RFNBO"]}
 ELEC_MJ = OPS_MJ
 
+wtw = {"HSFO": WtW_HSFO, "LFO": WtW_LFO, "MGO": WtW_MGO, "BIO": WtW_BIO, "RFNBO": WtW_RFNBO, "ELEC": 0.0}
 if "Extra-EU" in voyage_type:
-    scoped_energies = scoped_energies_extra_eu(energies_fuel_voyage, energies_fuel_berth, ELEC_MJ)
+    scoped_energies = scoped_energies_extra_eu(
+        energies_fuel_voyage,
+        energies_fuel_berth,
+        ELEC_MJ,
+        wtw
+    )
 else:
     scoped_energies = {**energies_fuel_full, "ELEC": ELEC_MJ}
 
 energies_full = {**energies_fuel_full, "ELEC": ELEC_MJ}
-wtw = {"HSFO": WtW_HSFO, "LFO": WtW_LFO, "MGO": WtW_MGO, "BIO": WtW_BIO, "RFNBO": WtW_RFNBO, "ELEC": 0.0}
 
 E_total_MJ = sum(energies_full.values())
 E_scope_MJ = sum(scoped_energies.values())
@@ -575,7 +602,7 @@ left_vals = {
     "MGO":   energies_fuel_full.get("MGO",   0.0),
 }
 
-# Right column (in-scope only)
+# Right column (in-scope only) — this reflects final post-allocation pooling
 right_vals = {
     "ELEC":  scoped_energies.get("ELEC",  0.0),
     "RFNBO": scoped_energies.get("RFNBO", 0.0),
@@ -619,7 +646,6 @@ for key, label in stack_layers:
 
     # Skip if nothing on both sides
     if layer_left <= 0.0 and layer_right <= 0.0:
-        # advance cumulative sums and continue
         cum_left += layer_left
         cum_right += layer_right
         continue
@@ -677,7 +703,7 @@ fig_stacks.update_layout(
 st.plotly_chart(fig_stacks, use_container_width=True)
 
 if "Extra-EU" in voyage_type:
-    st.caption("Left = total energy (voyage + at-berth + OPS). Right = in-scope energy per the renewables-first allocator and the 50% voyage rule; OPS is always in scope. Dashed labels show in-scope share by fuel.")
+    st.caption("Left = total energy (voyage + at-berth + OPS). Right = in-scope energy after WtW-prioritized allocation: RFNBO/BIO first, then at-berth fossils, then voyage fossils; OPS is always in scope.")
 else:
     st.caption("Intra-EU: all energy is in scope; dashed labels should read 100% for each fuel.")
 
@@ -708,7 +734,7 @@ fig.update_layout(xaxis_title="Year", yaxis_title="GHG Intensity [gCO₂e/MJ]",
                   legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1.0),
                   margin=dict(l=40, r=20, t=50, b=40))
 st.plotly_chart(fig, use_container_width=True)
-st.caption("ELEC (OPS) is always 100% in scope. For Extra-EU, at-berth fuels are 100% scope; voyage fuels follow the 50% rule with renewables first (BIO, then RFNBO).")
+st.caption("ELEC (OPS) is always 100% in scope. For Extra-EU, at-berth fuels are 100% scope; voyage fuels are 50% scope; renewables/fossils allocated by WtW priority as described above.")
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Results — Banking/Pooling (independent, capped vs pre-surplus) + auto deficit multiplier
@@ -829,7 +855,7 @@ if info_bank_ignored_no_surplus > 0:
 if info_final_safety_trim > 0:
     st.info(f"Final safety trim applied in {info_final_safety_trim} year(s) to avoid flipping surplus to deficit.")
 
-# Table — note the requested column order (Banked_to_Next_Year to the left of CarryIn)
+# Table — (kept column order as in your provided starting point)
 df_cost = pd.DataFrame(
     {
         "Year": years,
