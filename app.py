@@ -217,14 +217,14 @@ def scoped_energies_extra_eu(energies_fuel_voyage: Dict[str, float],
             return scoped
 
     # 3) Fossil voyage by WtW — **cap each at 50% of its voyage energy**
+    caps = {f: 0.5 * g(energies_fuel_voyage, f) for f in foss_sorted}
     for f in foss_sorted:
-        amt = 0.5 * g(energies_fuel_voyage, f)  # per-fuel 50% cap
-        take = min(amt, remaining)
+        take = min(caps[f], remaining)
         if take > 0:
-            scoped[f] += take
-            remaining -= take
+           scoped[f] += take
+           remaining -= take
         if remaining <= 0:
-            return scoped
+           return scoped
 
     return scoped
 
