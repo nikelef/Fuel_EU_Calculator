@@ -545,6 +545,89 @@ with cF: st.metric("Fossil — in scope", f"{us2(scoped_energies.get('HSFO',0)+s
 with cG: st.metric("BIO — in scope", f"{us2(scoped_energies.get('BIO',0))} MJ")
 with cH: st.metric("RFNBO — in scope", f"{us2(scoped_energies.get('RFNBO',0))} MJ")
 
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Visual — Two stacked columns: All energy vs In-scope energy
+# Paste after the top metrics and before the line plot
+# ──────────────────────────────────────────────────────────────────────────────
+st.markdown('<h2 style="margin:0 0 .25rem 0;">Energy composition — all vs in-scope</h2>',
+            unsafe_allow_html=True)
+
+categories = ["All energy", "In-scope energy"]
+
+# Stack order (bottom→top) as requested; ELEC shown at the very top
+stack_layers = [
+    ("RFNBO", "RFNBO"),
+    ("BIO",   "BIO"),
+    ("HSFO",  "HSFO"),
+    ("LFO",   "LFO"),
+    ("MGO",   "MGO"),
+    ("ELEC",  "ELEC (OPS)"),
+]
+
+# Left column (all energy = voyage + berth + OPS)
+left_vals = {
+    "RFNBO": energies_fuel_full.get("RFNBO", 0.0),
+    "BIO":   energies_fuel_full.get("BIO",   0.0),
+    "HSFO":  energies_fuel_full.get("HSFO",  0.0),
+    "LFO":   energies_fuel_full.get("LFO",   0.0),
+    "MGO":   energies_fuel_full.get("MGO",   0.0),
+    "ELEC":  ELEC_MJ,
+}
+
+# Right column (in-scope only, per allocator)
+right_vals = {
+    "RFNBO": scoped_energies.get("RFNBO", 0.0),
+    "BIO":   scoped_energies.get("BIO",   0.0),
+    "HSFO":  scoped_energies.get("HSFO",  0.0),
+    "LFO":   scoped_energies.get("LFO",   0.0),
+    "MGO":   scoped_energies.get("MGO",   0.0),
+    "ELEC":  scoped_energies.get("ELEC",  0.0),  # always fully in scope
+}
+
+fig_stacks = go.Figure()
+
+for key, label in stack_layers:
+    fig_stacks.add_trace(
+        go.Bar(
+            x=categories,
+            y=[left_vals.get(key, 0.0), right_vals.get(key, 0.0)],
+            name=label,
+            hovertemplate=f"{label}<br>%{{x}}<br>%{{y:,.2f}} MJ<extra></extra>",
+        )
+    )
+
+# Totals on top of each column
+total_all = sum(left_vals.values())
+total_scope = sum(right_vals.values())  # equals E_scope_MJ
+fig_stacks.add_annotation(
+    x=categories[0], y=total_all,
+    text=f"{us2(total_all)} MJ", showarrow=False, yshift=10, font=dict(size=12)
+)
+fig_stacks.add_annotation(
+    x=categories[1], y=total_scope,
+    text=f"{us2(total_scope)} MJ", showarrow=False, yshift=10, font=dict(size=12)
+)
+
+fig_stacks.update_layout(
+    barmode="stack",
+    xaxis_title="",
+    yaxis_title="Energy [MJ]",
+    hovermode="x unified",
+    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1.0),
+    margin=dict(l=40, r=20, t=50, b=20),
+    bargap=0.35,
+)
+
+st.plotly_chart(fig_stacks, use_container_width=True)
+
+if "Extra-EU" in voyage_type:
+    st.caption("Left = total energy (voyage + at-berth + OPS). Right = in-scope energy per the renewables-first allocator (RFNBO/BIO) and 50% voyage rule; OPS is always in scope.")
+else:
+    st.caption("Intra-EU: all energy is in scope, so the right column should match the left (no out-of-scope portion).")
+
+
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Plot
 # ──────────────────────────────────────────────────────────────────────────────
