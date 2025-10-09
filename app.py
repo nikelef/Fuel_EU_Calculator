@@ -576,6 +576,7 @@ with cH: st.metric("RFNBO — in scope", f"{us2(scoped_energies.get('RFNBO',0))}
 # ──────────────────────────────────────────────────────────────────────────────
 # Visual — Two stacked columns with dashed connectors & % labels (centers)
 # ELEC at the bottom; then fuels sorted by ascending WtW (lower at bottom → higher at top) in BOTH columns.
+# With fixed colors per your mapping.
 # ──────────────────────────────────────────────────────────────────────────────
 st.markdown('<h2 style="margin:0 0 .25rem 0;">Energy composition — all vs in-scope</h2>',
             unsafe_allow_html=True)
@@ -586,6 +587,16 @@ categories = ["All energy", "In-scope energy"]
 fuels = ["RFNBO", "BIO", "HSFO", "LFO", "MGO"]
 fuels_sorted = sorted(fuels, key=lambda f: wtw.get(f, float("inf")))
 stack_layers = [("ELEC", "ELEC (OPS)")] + [(f, f) for f in fuels_sorted]
+
+# Fixed color mapping
+COLORS = {
+    "ELEC":  "#FACC15",  # Yellow
+    "RFNBO": "#86EFAC",  # Light green
+    "BIO":   "#065F46",  # Dark green
+    "MGO":   "#93C5FD",  # Light blue
+    "LFO":   "#2563EB",  # Darker blue
+    "HSFO":  "#1E3A8A",  # Dark blue
+}
 
 # Left column (all energy = voyage + berth + OPS)
 left_vals = {
@@ -609,13 +620,14 @@ right_vals = {
 
 fig_stacks = go.Figure()
 
-# Add stacked bars in the dynamic order
+# Add stacked bars in the dynamic order with fixed colors
 for key, label in stack_layers:
     fig_stacks.add_trace(
         go.Bar(
             x=categories,
             y=[left_vals.get(key, 0.0), right_vals.get(key, 0.0)],
             name=label,
+            marker_color=COLORS.get(key, None),
             hovertemplate=f"{label}<br>%{{x}}<br>%{{y:,.2f}} MJ<extra></extra>",
         )
     )
