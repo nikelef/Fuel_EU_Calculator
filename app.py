@@ -174,8 +174,8 @@ def scoped_energies_extra_eu(energies_fuel_voyage: Dict[str, float],
       • Build one in-scope fuel pool: ELEC (100%) + at-berth fuels (100%) + 50% of *total* voyage fuels
       • Re-fill the pool (without changing its total) by WtW priority:
           1) Renewables (RFNBO vs BIO): lower WtW first, take up to their full energy (voy+berth)
-          2) Fossil at-berth (HSFO, LFO, MGO): ascending WtW
-          3) Fossil voyage  (HSFO, LFO, MGO): ascending WtW
+          2) Fossil at-berth by WtW
+          3) Fossil voyage  by WtW
       • ELEC is always 100% in-scope and excluded from the competition.
     """
     def g(d, k): return float(d.get(k, 0.0))
@@ -575,22 +575,17 @@ with cH: st.metric("RFNBO — in scope", f"{us2(scoped_energies.get('RFNBO',0))}
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Visual — Two stacked columns with dashed connectors & % labels (centers)
-# ELEC is at the bottom; connectors join layer centers, not layer tops.
+# ELEC at the bottom; then fuels sorted by ascending WtW (lower at bottom → higher at top) in BOTH columns.
 # ──────────────────────────────────────────────────────────────────────────────
 st.markdown('<h2 style="margin:0 0 .25rem 0;">Energy composition — all vs in-scope</h2>',
             unsafe_allow_html=True)
 
 categories = ["All energy", "In-scope energy"]
 
-# Stack order (bottom→top): ELEC, RFNBO, BIO, HSFO, LFO, MGO
-stack_layers = [
-    ("ELEC",  "ELEC (OPS)"),
-    ("RFNBO", "RFNBO"),
-    ("BIO",   "BIO"),
-    ("HSFO",  "HSFO"),
-    ("LFO",   "LFO"),
-    ("MGO",   "MGO"),
-]
+# Dynamic stack order: ELEC bottom, then fuels by ascending WtW
+fuels = ["RFNBO", "BIO", "HSFO", "LFO", "MGO"]
+fuels_sorted = sorted(fuels, key=lambda f: wtw.get(f, float("inf")))
+stack_layers = [("ELEC", "ELEC (OPS)")] + [(f, f) for f in fuels_sorted]
 
 # Left column (all energy = voyage + berth + OPS)
 left_vals = {
@@ -602,7 +597,7 @@ left_vals = {
     "MGO":   energies_fuel_full.get("MGO",   0.0),
 }
 
-# Right column (in-scope only) — this reflects final post-allocation pooling
+# Right column (in-scope only) — reflects final post-allocation pooling
 right_vals = {
     "ELEC":  scoped_energies.get("ELEC",  0.0),
     "RFNBO": scoped_energies.get("RFNBO", 0.0),
@@ -614,7 +609,7 @@ right_vals = {
 
 fig_stacks = go.Figure()
 
-# Add stacked bars
+# Add stacked bars in the dynamic order
 for key, label in stack_layers:
     fig_stacks.add_trace(
         go.Bar(
@@ -644,7 +639,7 @@ for key, label in stack_layers:
     layer_left = float(left_vals.get(key, 0.0))
     layer_right = float(right_vals.get(key, 0.0))
 
-    # Skip if nothing on both sides
+    # Skip only if both sides zero
     if layer_left <= 0.0 and layer_right <= 0.0:
         cum_left += layer_left
         cum_right += layer_right
@@ -703,9 +698,9 @@ fig_stacks.update_layout(
 st.plotly_chart(fig_stacks, use_container_width=True)
 
 if "Extra-EU" in voyage_type:
-    st.caption("Left = total energy (voyage + at-berth + OPS). Right = in-scope energy after WtW-prioritized allocation: RFNBO/BIO first, then at-berth fossils, then voyage fossils; OPS is always in scope.")
+    st.caption("Left = total energy (voyage + at-berth + OPS). Right = in-scope energy after WtW-prioritized allocation: RFNBO/BIO first, then at-berth fossils, then voyage fossils; OPS is always in scope. Bars ordered by ELEC then ascending WtW.")
 else:
-    st.caption("Intra-EU: all energy is in scope; dashed labels should read 100% for each fuel.")
+    st.caption("Intra-EU: all energy is in scope. Bars ordered by ELEC then ascending WtW; dashed labels should read 100% for each fuel.")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -773,13 +768,13 @@ for _, row in LIMITS_DF.iterrows():
     carry_in_list.append(carry)
     cb_eff_t.append(cb_eff)
 
-    # ---------- P O O L I N G  (independent, cap vs pre-surplus; applies only from pooling_start_year) ----------
+    # ---------- P O O L I N G (independent, cap vs pre-surplus; applies only from pooling_start_year) ----------
     if year >= int(pooling_start_year):
         if pooling_tco2e_input >= 0:
             pool_use = pooling_tco2e_input  # uptake can overshoot
         else:
             provide_abs = abs(pooling_tco2e_input)
-            pre_surplus = max(cb_eff, 0.0)              # cap vs pre-adjustment surplus
+            pre_surplus = max(cb_eff, 0.0)
             applied_provide = min(provide_abs, pre_surplus)
             if applied_provide < provide_abs:
                 info_provide_capped += 1
@@ -787,9 +782,9 @@ for _, row in LIMITS_DF.iterrows():
     else:
         pool_use = 0.0
 
-    # ---------- B A N K I N G  (independent, cap vs pre-surplus; applies only from banking_start_year) ----------
+    # ---------- B A N K I N G (independent, cap vs pre-surplus; applies only from banking_start_year) ----------
     if year >= int(banking_start_year):
-        pre_surplus = max(cb_eff, 0.0)                  # same anchor as for pooling
+        pre_surplus = max(cb_eff, 0.0)
         requested_bank = max(banking_tco2e_input, 0.0)
         bank_use = min(requested_bank, pre_surplus)
         if requested_bank > pre_surplus:
@@ -802,20 +797,17 @@ for _, row in LIMITS_DF.iterrows():
     # ---------- F I N A L   B A L A N C E  &  Safety clamp ----------
     final_bal = cb_eff + pool_use - bank_use
 
-    # Safety clamp: never flip a surplus to a deficit (trim bank first, then provide)
     if final_bal < 0:
         needed = -final_bal
         trim_bank = min(needed, bank_use)
         bank_use -= trim_bank
         needed -= trim_bank
         if needed > 0 and pool_use < 0:
-            # Reduce the absolute provide (i.e., provide less)
             pool_use += needed
             needed = 0.0
         final_bal = cb_eff + pool_use - bank_use
         info_final_safety_trim += 1
 
-    # Carry to next year is the *final* banked amount (after any trims)
     carry_next = bank_use
 
     # ---------- Consecutive-deficit multiplier (automatic) ----------
@@ -823,7 +815,7 @@ for _, row in LIMITS_DF.iterrows():
         deficit_streak += 1
     else:
         deficit_streak = 0
-    multiplier_y = 1.0 + max(deficit_streak - 1, 0) * 0.10  # 1st deficit → 1.0; 2nd → 1.1; 3rd → 1.2; ...
+    multiplier_y = 1.0 + max(deficit_streak - 1, 0) * 0.10
 
     # ---------- € ----------
     if final_bal > 0:
@@ -842,7 +834,6 @@ for _, row in LIMITS_DF.iterrows():
     credits_eur.append(credit_val)
     net_eur.append(credit_val - penalty_val)
 
-    # Prepare next loop
     carry = carry_next
 
 # Informational notes (no hard errors)
@@ -863,13 +854,12 @@ df_cost = pd.DataFrame(
         "Limit_gCO2e_per_MJ": LIMITS_DF["Limit_gCO2e_per_MJ"].tolist(),
         "Actual_gCO2e_per_MJ": g_att_list,
         "Emissions_tCO2e": [emissions_tco2e]*len(years),
-        "Compliance_Balance_tCO2e": cb_raw_t,            # raw
-        "CarryIn_Banked_tCO2e": carry_in_list,           # from previous year
-        "Effective_Balance_tCO2e": cb_eff_t,             # before adjustments
-        "Banked_to_Next_Year_tCO2e": bank_applied,       # final bank applied this year
-        "Pooling_tCO2e_Applied": pool_applied,           # +uptake / −provide (capped vs pre-surplus)
-        "Final_Balance_tCO2e_for_€": final_balance_t,    # after independent pooling & banking (+ safety)
-
+        "Compliance_Balance_tCO2e": cb_raw_t,
+        "CarryIn_Banked_tCO2e": carry_in_list,
+        "Effective_Balance_tCO2e": cb_eff_t,
+        "Banked_to_Next_Year_tCO2e": bank_applied,
+        "Pooling_tCO2e_Applied": pool_applied,
+        "Final_Balance_tCO2e_for_€": final_balance_t,
         "Penalty_EUR": penalties_eur,
         "Credit_EUR": credits_eur,
         "Net_EUR": net_eur,
