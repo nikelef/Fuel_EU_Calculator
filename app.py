@@ -545,8 +545,9 @@ with cF: st.metric("Fossil — in scope", f"{us2(scoped_energies.get('HSFO',0)+s
 with cG: st.metric("BIO — in scope", f"{us2(scoped_energies.get('BIO',0))} MJ")
 with cH: st.metric("RFNBO — in scope", f"{us2(scoped_energies.get('RFNBO',0))} MJ")
 
+
 # ──────────────────────────────────────────────────────────────────────────────
-# Visual — Two stacked columns: All energy vs In-scope energy (ELEC at bottom)
+# Visual — Two stacked columns with dashed connectors & % labels (ELEC at bottom)
 # Paste after the top metrics and before the line plot
 # ──────────────────────────────────────────────────────────────────────────────
 st.markdown('<h2 style="margin:0 0 .25rem 0;">Energy composition — all vs in-scope</h2>',
@@ -554,7 +555,7 @@ st.markdown('<h2 style="margin:0 0 .25rem 0;">Energy composition — all vs in-s
 
 categories = ["All energy", "In-scope energy"]
 
-# Stack order (bottom→top): ELEC first at the bottom, then RFNBO, BIO, HSFO, LFO, MGO
+# Stack order (bottom→top): ELEC at the bottom, then RFNBO, BIO, HSFO, LFO, MGO
 stack_layers = [
     ("ELEC",  "ELEC (OPS)"),
     ("RFNBO", "RFNBO"),
@@ -574,9 +575,9 @@ left_vals = {
     "MGO":   energies_fuel_full.get("MGO",   0.0),
 }
 
-# Right column (in-scope only, per allocator)
+# Right column (in-scope only)
 right_vals = {
-    "ELEC":  scoped_energies.get("ELEC",  0.0),  # always fully in scope
+    "ELEC":  scoped_energies.get("ELEC",  0.0),
     "RFNBO": scoped_energies.get("RFNBO", 0.0),
     "BIO":   scoped_energies.get("BIO",   0.0),
     "HSFO":  scoped_energies.get("HSFO",  0.0),
@@ -586,6 +587,7 @@ right_vals = {
 
 fig_stacks = go.Figure()
 
+# Add stacked bars
 for key, label in stack_layers:
     fig_stacks.add_trace(
         go.Bar(
@@ -598,7 +600,7 @@ for key, label in stack_layers:
 
 # Totals on top of each column
 total_all = sum(left_vals.values())
-total_scope = sum(right_vals.values())  # equals E_scope_MJ
+total_scope = sum(right_vals.values())
 fig_stacks.add_annotation(
     x=categories[0], y=total_all,
     text=f"{us2(total_all)} MJ", showarrow=False, yshift=10, font=dict(size=12)
@@ -607,6 +609,53 @@ fig_stacks.add_annotation(
     x=categories[1], y=total_scope,
     text=f"{us2(total_scope)} MJ", showarrow=False, yshift=10, font=dict(size=12)
 )
+
+# Dashed connectors at each layer's top boundary + % labels
+cum_left = 0.0
+cum_right = 0.0
+for key, label in stack_layers:
+    layer_left = float(left_vals.get(key, 0.0))
+    layer_right = float(right_vals.get(key, 0.0))
+    cum_left += layer_left
+    cum_right += layer_right
+
+    # Skip if nothing in this layer on both sides
+    if layer_left <= 0 and layer_right <= 0:
+        continue
+
+    # Add dashed connector line (top boundary of the layer)
+    fig_stacks.add_trace(
+        go.Scatter(
+            x=categories,
+            y=[cum_left, cum_right],
+            mode="lines",
+            line=dict(dash="dot", width=2),
+            hoverinfo="skip",
+            showlegend=False,
+        )
+    )
+
+    # Percentage label = in-scope share of this fuel layer
+    if layer_left > 0:
+        pct = (layer_right / layer_left) * 100.0
+        # Guard against any numerical edge cases
+        pct = max(min(pct, 100.0), 0.0)
+    else:
+        pct = 100.0  # nothing to reduce implies 100% by convention
+
+    # Place the label at the horizontal midpoint between the two bars,
+    # vertically near the connector line
+    y_mid = (cum_left + cum_right) / 2.0
+    fig_stacks.add_annotation(
+        xref="paper", yref="y",
+        x=0.5, y=y_mid,
+        text=f"{pct:.0f}%",
+        showarrow=False,
+        font=dict(size=11, color="#374151"),
+        bgcolor="rgba(255,255,255,0.65)",
+        bordercolor="rgba(0,0,0,0)",
+        borderpad=1,
+    )
 
 fig_stacks.update_layout(
     barmode="stack",
@@ -621,9 +670,9 @@ fig_stacks.update_layout(
 st.plotly_chart(fig_stacks, use_container_width=True)
 
 if "Extra-EU" in voyage_type:
-    st.caption("Left = total energy (voyage + at-berth + OPS). Right = in-scope energy per the renewables-first allocator and 50% voyage rule; OPS is always in scope.")
+    st.caption("Left = total energy (voyage + at-berth + OPS). Right = in-scope energy per the renewables-first allocator and the 50% voyage rule; OPS is always in scope. Dashed labels show in-scope share by fuel.")
 else:
-    st.caption("Intra-EU: all energy is in scope; the right column mirrors the left.")
+    st.caption("Intra-EU: all energy is in scope; dashed labels should read 100% for each fuel.")
 
 
 # ──────────────────────────────────────────────────────────────────────────────
