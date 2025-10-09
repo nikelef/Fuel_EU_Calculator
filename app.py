@@ -7,9 +7,10 @@
 #     ⤷ Requested allocator (WtW-prioritized, pool-then-fill):
 #         1) Build in-scope fuel pool = 100% at-berth fuels + 50% of total voyage fuels (ELEC always 100% in scope).
 #         2) Fill the pool (without changing its total) by WtW priority:
-#            a) Renewables (RFNBO vs BIO): lower WtW first, up to their full energy (voy+berth).
-#            b) Fossil at-berth (HSFO, LFO, MGO): ascending WtW.
-#            c) Fossil voyage  (HSFO, LFO, MGO): ascending WtW, **each capped at 50% per fuel** with partial on last to close pool.
+#            a) Renewables (RFNBO vs BIO): lower WtW first; at-berth 100% first, then voyage up to spare capacity
+#               (leaving enough room to ensure all fossil at-berth still fit 100%).
+#            b) Fossil at-berth (HSFO, LFO, MGO): 100% in ascending WtW.
+#            c) Fossil voyage  (HSFO, LFO, MGO): 50% per fuel in ascending WtW, partial on the last if needed.
 # RFNBO reward:
 #   • Until end-2033, RFNBO gets a ×2 reward in the intensity denominator (compliance only, not physical emissions).
 # UI/formatting:
@@ -170,12 +171,14 @@ def scoped_energies_extra_eu(energies_fuel_voyage: Dict[str, float],
                              elec_MJ: float,
                              wtw: Dict[str, float]) -> Dict[str, float]:
     """
-    Extra-EU (requested variant):
+    Extra-EU (requested variant, with berth-100% guarantee):
       • Build one in-scope fuel pool: ELEC (100%) + at-berth fuels (100%) + 50% of *total* voyage fuels
-      • Re-fill the pool (without changing its total) by WtW priority:
-          1) Renewables (RFNBO vs BIO): lower WtW first, take up to their full energy (voy+berth)
-          2) Fossil at-berth by WtW (HSFO/LFO/MGO)
-          3) Fossil voyage by WtW (HSFO/LFO/MGO), **each capped at 50% of its voyage energy**, partial on last if needed
+      • Fill the pool by WtW priority, without changing its total:
+          1) Renewables (RFNBO, BIO), lower WtW first:
+             - take AT-BERTH part first (100%),
+             - then take VOYAGE part but only up to the spare pool after reserving all fossil at-berth.
+          2) Fossil AT-BERTH (HSFO, LFO, MGO): 100% in ascending WtW.
+          3) Fossil VOYAGE (HSFO, LFO, MGO): take 50% of each fuel in ascending WtW; partial on the last if needed.
       • ELEC is always 100% in-scope and excluded from the competition.
     """
     def g(d, k): return float(d.get(k, 0.0))
@@ -185,18 +188,46 @@ def scoped_energies_extra_eu(energies_fuel_voyage: Dict[str, float],
     half_voy  = 0.5 * total_voy
     total_berth = sum(energies_fuel_berth.values())
 
-    # Total in-scope pool (fuels only) + ELEC = fixed
+    # Reservation: fossil at-berth must end up 100% in-scope
+    fossils = ["HSFO", "LFO", "MGO"]
+    foss_sorted = sorted(fossils, key=lambda f: wtw.get(f, float("inf")))
+    berth_fossil_total = sum(g(energies_fuel_berth, f) for f in fossils)
+
+    # Fixed pool for fuels (ELEC handled separately)
     pool_total = total_berth + half_voy
+
     scoped = {k: 0.0 for k in ["HSFO","LFO","MGO","BIO","RFNBO","ELEC"]}
     scoped["ELEC"] = max(elec_MJ, 0.0)
 
-    remaining = pool_total  # fuels only; ELEC already set aside
+    remaining = pool_total  # fuels only
 
-    # 1) Renewables: choose order by lower WtW first
+    # 1) Renewables (at-berth first, then voyage up to spare pool after reserving berth fossils)
     ren = ["RFNBO", "BIO"]
     ren_sorted = sorted(ren, key=lambda f: wtw.get(f, float("inf")))
+
     for f in ren_sorted:
-        amt = g(energies_fuel_voyage, f) + g(energies_fuel_berth, f)  # 100% (voy+berth), constrained by remaining
+        # a) at-berth part — 100%
+        amt_b = g(energies_fuel_berth, f)
+        take_b = min(amt_b, remaining)
+        if take_b > 0:
+            scoped[f] += take_b
+            remaining -= take_b
+        if remaining <= 0:
+            return scoped
+
+        # b) voyage part — only up to spare after reserving all fossil at-berth
+        amt_v = g(energies_fuel_voyage, f)
+        spare_for_voy_ren = max(0.0, remaining - berth_fossil_total)
+        take_v = min(amt_v, spare_for_voy_ren)
+        if take_v > 0:
+            scoped[f] += take_v
+            remaining -= take_v
+        if remaining <= 0:
+            return scoped
+
+    # 2) Fossil at-berth — 100% in ascending WtW
+    for f in foss_sorted:
+        amt = g(energies_fuel_berth, f)
         take = min(amt, remaining)
         if take > 0:
             scoped[f] += take
@@ -204,21 +235,9 @@ def scoped_energies_extra_eu(energies_fuel_voyage: Dict[str, float],
         if remaining <= 0:
             return scoped
 
-    # 2) Fossil at-berth by WtW (HSFO/LFO/MGO) — 100%
-    fossils = ["HSFO", "LFO", "MGO"]
-    foss_sorted = sorted(fossils, key=lambda f: wtw.get(f, float("inf")))
+    # 3) Fossil voyage — 50% per fuel in ascending WtW, partial on last to close pool
     for f in foss_sorted:
-        amt = g(energies_fuel_berth, f)  # 100% at-berth
-        take = min(amt, remaining)
-        if take > 0:
-            scoped[f] += take
-            remaining -= take
-        if remaining <= 0:
-            return scoped
-
-    # 3) Fossil voyage by ascending WtW — take 50% of each fuel, with partial on last to close pool
-    for f in foss_sorted:
-        half_voy_fuel = 0.5 * g(energies_fuel_voyage, f)  # per-fuel 50% cap
+        half_voy_fuel = 0.5 * g(energies_fuel_voyage, f)
         if half_voy_fuel <= 0 or remaining <= 0:
             continue
         take = min(half_voy_fuel, remaining)
@@ -651,17 +670,14 @@ for key, label in stack_layers:
     layer_left = float(left_vals.get(key, 0.0))
     layer_right = float(right_vals.get(key, 0.0))
 
-    # Skip if nothing on both sides
     if layer_left <= 0.0 and layer_right <= 0.0:
         cum_left += layer_left
         cum_right += layer_right
         continue
 
-    # Centers of the layers (previous sum + half the layer height)
     y_center_left = cum_left + (layer_left / 2.0)
     y_center_right = cum_right + (layer_right / 2.0)
 
-    # 1) Dashed connector line (visual “flow” guide)
     fig_stacks.add_trace(
         go.Scatter(
             x=categories,
@@ -673,24 +689,21 @@ for key, label in stack_layers:
         )
     )
 
-    # 2) Arrow overlay that points to the right stack center
     fig_stacks.add_annotation(
-        x=categories[1], y=y_center_right,      # arrow tip (right stack center)
-        ax=categories[0], ay=y_center_left,     # arrow tail (left stack center)
+        x=categories[1], y=y_center_right,
+        ax=categories[0], ay=y_center_left,
         xref="x", yref="y", axref="x", ayref="y",
         text="", showarrow=True,
         arrowhead=3, arrowsize=1.2, arrowwidth=2,
         arrowcolor="rgba(0,0,0,0.65)"
     )
 
-    # Percentage label = in-scope share of this fuel layer
     if layer_left > 0:
         pct = (layer_right / layer_left) * 100.0
         pct = max(min(pct, 100.0), 0.0)
     else:
         pct = 100.0
 
-    # Place label midway between centers
     y_mid = 0.5 * (y_center_left + y_center_right)
     fig_stacks.add_annotation(
         xref="paper", yref="y",
@@ -703,10 +716,8 @@ for key, label in stack_layers:
         borderpad=1,
     )
 
-    # Update cumulative sums for next layer
     cum_left += layer_left
     cum_right += layer_right
-
 
 fig_stacks.update_layout(
     barmode="stack",
@@ -721,7 +732,7 @@ fig_stacks.update_layout(
 st.plotly_chart(fig_stacks, use_container_width=True)
 
 if "Extra-EU" in voyage_type:
-    st.caption("Left = total energy (voyage + at-berth + OPS). Right = in-scope energy after WtW-prioritized allocation: RFNBO/BIO first, then at-berth fossils, then voyage fossils (each capped at 50%); OPS is always in scope. Bars ordered by ELEC then ascending WtW.")
+    st.caption("Left = total energy (voyage + at-berth + OPS). Right = in-scope after priority: RFNBO/BIO (at-berth then voyage up to spare), then all at-berth fossils (100%), then 50% of voyage fossils (ascending WtW; partial on last). ELEC is always 100%.")
 else:
     st.caption("Intra-EU: all energy is in scope. Bars ordered by ELEC then ascending WtW; dashed labels should read 100% for each fuel.")
 
@@ -751,7 +762,7 @@ fig.update_layout(xaxis_title="Year", yaxis_title="GHG Intensity [gCO₂e/MJ]",
                   legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1.0),
                   margin=dict(l=40, r=20, t=50, b=40))
 st.plotly_chart(fig, use_container_width=True)
-st.caption("ELEC (OPS) is always 100% in scope. For Extra-EU, at-berth fuels are 100% scope; voyage fuels are 50% scope; renewables/fossils allocated by WtW priority as described above.")
+st.caption("ELEC (OPS) is always 100% in scope. For Extra-EU, at-berth fuels are 100% scope; voyage fuels are 50% scope; allocation follows the priority described above.")
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Results — Banking/Pooling (independent, capped vs pre-surplus) + auto deficit multiplier
@@ -790,10 +801,10 @@ for _, row in LIMITS_DF.iterrows():
     carry_in_list.append(carry)
     cb_eff_t.append(cb_eff)
 
-    # ---------- P O O L I N G (independent, cap vs pre-surplus; applies only from pooling_start_year) ----------
+    # ---------- P O O L I N G ----------
     if year >= int(pooling_start_year):
         if pooling_tco2e_input >= 0:
-            pool_use = pooling_tco2e_input  # uptake can overshoot
+            pool_use = pooling_tco2e_input
         else:
             provide_abs = abs(pooling_tco2e_input)
             pre_surplus = max(cb_eff, 0.0)
@@ -804,7 +815,7 @@ for _, row in LIMITS_DF.iterrows():
     else:
         pool_use = 0.0
 
-    # ---------- B A N K I N G (independent, cap vs pre-surplus; applies only from banking_start_year) ----------
+    # ---------- B A N K I N G ----------
     if year >= int(banking_start_year):
         pre_surplus = max(cb_eff, 0.0)
         requested_bank = max(banking_tco2e_input, 0.0)
@@ -868,7 +879,7 @@ if info_bank_ignored_no_surplus > 0:
 if info_final_safety_trim > 0:
     st.info(f"Final safety trim applied in {info_final_safety_trim} year(s) to avoid flipping surplus to deficit.")
 
-# Table — (kept column order as in your provided starting point)
+# Table — (kept column order)
 df_cost = pd.DataFrame(
     {
         "Year": years,
