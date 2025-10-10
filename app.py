@@ -278,6 +278,40 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+st.markdown("""
+<style>
+/* Compact + wrap + centered headers & cells for st.dataframe */
+[data-testid="stDataFrame"] div[role="columnheader"],
+[data-testid="stDataFrame"] div[role="gridcell"]{
+  padding: 2px 6px !important;
+}
+
+/* Wrap header text & center it */
+[data-testid="stDataFrame"] div[role="columnheader"] *{
+  white-space: normal !important;
+  overflow-wrap: anywhere !important;
+  word-break: break-word !important;
+  text-align: center !important;
+}
+[data-testid="stDataFrame"] div[role="columnheader"]{
+  justify-content: center !important;
+}
+
+/* Wrap cell text & center content */
+[data-testid="stDataFrame"] div[role="gridcell"] *{
+  white-space: normal !important;
+  overflow-wrap: anywhere !important;
+  word-break: break-word !important;
+  text-align: center !important;
+}
+[data-testid="stDataFrame"] div[role="gridcell"]{
+  justify-content: center !important;
+}
+
+/* Slightly smaller font for denser view */
+[data-testid="stDataFrame"] { font-size: 0.85rem !important; }
+</style>
+""", unsafe_allow_html=True)
 
 # Sidebar — structured groups with conditional rendering
 with st.sidebar:
