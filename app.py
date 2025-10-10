@@ -50,7 +50,7 @@ import streamlit as st
 BASELINE_2020_GFI = 91.16  # gCO2e/MJ
 DEFAULTS_PATH = ".fueleu_defaults.json"
 
-#REDUCTION_STEPS = [
+REDUCTION_STEPS = [
     (2025, 2029, 2.0),
     (2030, 2034, 6.0),
     (2035, 2039, 14.5),
