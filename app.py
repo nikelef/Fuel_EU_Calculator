@@ -782,8 +782,11 @@ info_final_safety_trim = 0
 
 carry = 0.0  # tCO2e banked from previous year only
 
-# Seed the consecutive deficit streak from UI (n): value 1 means no extra; 2→one extra step, etc.
-deficit_streak = max(int(consecutive_deficit_years_seed), 1) - 1
+# Seed to apply at the first *deficit* year only; don't let early surplus years wipe it.
+prior_seed = max(int(consecutive_deficit_years_seed) - 1, 0)
+applied_seed = False
+deficit_run = 0  # length of the current consecutive-deficit run within this period
+
 
 for _, row in LIMITS_DF.iterrows():
     year = int(row["Year"])
@@ -843,12 +846,22 @@ for _, row in LIMITS_DF.iterrows():
 
     carry_next = bank_use
 
-    # ---------- Consecutive-deficit multiplier (automatic) ----------
-    if final_bal < 0:
-        deficit_streak += 1
+    # ---------- Consecutive-deficit multiplier (automatic, seed applies to the first deficit run only) ----------
+if final_bal < 0:
+    if not applied_seed:
+        # First deficit in this period: pretend we already had `prior_seed` consecutive deficits
+        # so the first penalty reflects the seed immediately.
+        deficit_run = prior_seed + 1  # include this year
+        applied_seed = True
     else:
-        deficit_streak = 0
-    multiplier_y = 1.0 + max(deficit_streak - 1, 0) * 0.10
+        # Continuing a deficit run
+        deficit_run += 1
+    multiplier_y = 1.0 + max(deficit_run - 1, 0) * 0.10
+else:
+    # Surplus resets the run length; once the seed has been used, it is *not* reused.
+    deficit_run = 0
+    multiplier_y = 1.0
+
 
     # ---------- € ----------
     if final_bal > 0:
