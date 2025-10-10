@@ -847,20 +847,20 @@ for _, row in LIMITS_DF.iterrows():
     carry_next = bank_use
 
     # ---------- Consecutive-deficit multiplier (automatic, seed applies to the first deficit run only) ----------
-if final_bal < 0:
-    if not applied_seed:
-        # First deficit in this period: pretend we already had `prior_seed` consecutive deficits
-        # so the first penalty reflects the seed immediately.
-        deficit_run = prior_seed + 1  # include this year
-        applied_seed = True
+    if final_bal < 0:
+       if not applied_seed:
+          # First deficit in this period: pretend we already had `prior_seed` consecutive deficits
+          # so the first penalty reflects the seed immediately.
+          deficit_run = prior_seed + 1  # include this year
+          applied_seed = True
+       else:
+           # Continuing a deficit run
+          deficit_run += 1
+       multiplier_y = 1.0 + max(deficit_run - 1, 0) * 0.10
     else:
-        # Continuing a deficit run
-        deficit_run += 1
-    multiplier_y = 1.0 + max(deficit_run - 1, 0) * 0.10
-else:
-    # Surplus resets the run length; once the seed has been used, it is *not* reused.
-    deficit_run = 0
-    multiplier_y = 1.0
+        # Surplus resets the run length; once the seed has been used, it is *not* reused.
+        deficit_run = 0
+        multiplier_y = 1.0
 
 
     # ---------- € ----------
