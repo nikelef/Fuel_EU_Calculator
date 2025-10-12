@@ -315,6 +315,12 @@ st.markdown("""
 
 # Sidebar — structured groups with conditional rendering
 with st.sidebar:
+    # ── Currency (at top, above voyage toggles)
+    st.markdown('<div class="section-title">Exchange rate</div>', unsafe_allow_html=True)
+    eur_usd_fx = float_text_input("1 Euro = … USD", _get(DEFAULTS, "eur_usd_fx", 1.00),
+                                  key="eur_usd_fx", min_value=0.0)
+    st.divider()
+
     scope_options = ["Intra-EU (100%)", "Extra-EU (50%)"]
     saved_scope = _get(DEFAULTS, "voyage_type", scope_options[0])
     try:
@@ -541,6 +547,7 @@ with st.sidebar:
             hsfo_t, lfo_t, mgo_t, bio_t, rfnbo_t = HSFO_voy_t, LFO_voy_t, MGO_voy_t, BIO_voy_t, RFNBO_voy_t
         defaults_to_save = {
             "voyage_type": voyage_type,
+            "eur_usd_fx": eur_usd_fx,  # <── save exchange rate
             "HSFO_t": hsfo_t, "LFO_t": lfo_t, "MGO_t": mgo_t, "BIO_t": bio_t, "RFNBO_t": rfnbo_t,
             "HSFO_voy_t": HSFO_voy_t, "LFO_voy_t": LFO_voy_t, "MGO_voy_t": MGO_voy_t, "BIO_voy_t": BIO_voy_t, "RFNBO_voy_t": RFNBO_voy_t,
             "HSFO_berth_t": HSFO_berth_t, "LFO_berth_t": LFO_berth_t, "MGO_berth_t": MGO_berth_t, "BIO_berth_t": BIO_berth_t, "RFNBO_berth_t": RFNBO_berth_t,
@@ -808,6 +815,8 @@ emissions_tco2e = (g_base * E_scope_MJ) / 1e6  # physical
 cb_raw_t, carry_in_list, cb_eff_t = [], [], []
 pool_applied, bank_applied = [], []
 final_balance_t, penalties_eur, credits_eur, net_eur, g_att_list = [], [], [], [], []
+# USD lists
+penalties_usd, credits_usd = [], []
 
 info_provide_capped = 0
 info_bank_capped = 0
@@ -820,7 +829,6 @@ carry = 0.0  # tCO2e banked from previous year only
 prior_seed = max(int(consecutive_deficit_years_seed) - 1, 0)
 applied_seed = False
 deficit_run = 0  # length of the current consecutive-deficit run within this period
-
 
 for _, row in LIMITS_DF.iterrows():
     year = int(row["Year"])
@@ -883,19 +891,14 @@ for _, row in LIMITS_DF.iterrows():
     # ---------- Consecutive-deficit multiplier (automatic, seed applies to the first deficit run only) ----------
     if final_bal < 0:
        if not applied_seed:
-          # First deficit in this period: pretend we already had `prior_seed` consecutive deficits
-          # so the first penalty reflects the seed immediately.
           deficit_run = prior_seed + 1  # include this year
           applied_seed = True
        else:
-           # Continuing a deficit run
           deficit_run += 1
        multiplier_y = 1.0 + max(deficit_run - 1, 0) * 0.10
     else:
-        # Surplus resets the run length; once the seed has been used, it is *not* reused.
         deficit_run = 0
         multiplier_y = 1.0
-
 
     # ---------- € ----------
     if final_bal > 0:
@@ -907,12 +910,16 @@ for _, row in LIMITS_DF.iterrows():
     else:
         credit_val = penalty_val = 0.0
 
+    # Append EUR & USD
     pool_applied.append(pool_use)
     bank_applied.append(bank_use)
     final_balance_t.append(final_bal)
     penalties_eur.append(penalty_val)
     credits_eur.append(credit_val)
     net_eur.append(credit_val - penalty_val)
+
+    penalties_usd.append(penalty_val * eur_usd_fx)
+    credits_usd.append(credit_val * eur_usd_fx)
 
     carry = carry_next
 
@@ -926,7 +933,7 @@ if info_bank_ignored_no_surplus > 0:
 if info_final_safety_trim > 0:
     st.info(f"Final safety trim applied in {info_final_safety_trim} year(s) to avoid flipping surplus to deficit.")
 
-# Table — (kept column order)
+# Table — (kept column order; penalties/credits now in USD)
 df_cost = pd.DataFrame(
     {
         "Year": years,
@@ -940,8 +947,8 @@ df_cost = pd.DataFrame(
         "Banked_to_Next_Year_tCO2e": bank_applied,
         "Pooling_tCO2e_Applied": pool_applied,
         "Final_Balance_tCO2e_for_€": final_balance_t,
-        "Penalty_EUR": penalties_eur,
-        "Credit_EUR": credits_eur,
+        "Penalty_USD": penalties_usd,
+        "Credit_USD": credits_usd,
         "Net_EUR": net_eur,
     }
 )
