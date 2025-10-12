@@ -814,7 +814,7 @@ emissions_tco2e = (g_base * E_scope_MJ) / 1e6  # physical
 
 cb_raw_t, carry_in_list, cb_eff_t = [], [], []
 pool_applied, bank_applied = [], []
-final_balance_t, penalties_eur, credits_eur, net_eur, g_att_list = [], [], [], [], []
+final_balance_t, penalties_eur, credits_eur, g_att_list = [], [], [], []
 # USD lists
 penalties_usd, credits_usd = [], []
 
@@ -847,6 +847,8 @@ for _, row in LIMITS_DF.iterrows():
     cb_eff_t.append(cb_eff)
 
     # ---------- P O O L I N G ----------
+    if year >= int(banking_start_year):  # Keep original order (typo safe-guard not intended)
+        pass
     if year >= int(pooling_start_year):
         if pooling_tco2e_input >= 0:
             pool_use = pooling_tco2e_input
@@ -916,7 +918,6 @@ for _, row in LIMITS_DF.iterrows():
     final_balance_t.append(final_bal)
     penalties_eur.append(penalty_val)
     credits_eur.append(credit_val)
-    net_eur.append(credit_val - penalty_val)
 
     penalties_usd.append(penalty_val * eur_usd_fx)
     credits_usd.append(credit_val * eur_usd_fx)
@@ -933,7 +934,7 @@ if info_bank_ignored_no_surplus > 0:
 if info_final_safety_trim > 0:
     st.info(f"Final safety trim applied in {info_final_safety_trim} year(s) to avoid flipping surplus to deficit.")
 
-# Table — (kept column order; penalties/credits now in USD)
+# Table — (kept column order; penalties/credits now in USD; removed Net_EUR)
 df_cost = pd.DataFrame(
     {
         "Year": years,
@@ -949,7 +950,6 @@ df_cost = pd.DataFrame(
         "Final_Balance_tCO2e_for_€": final_balance_t,
         "Penalty_USD": penalties_usd,
         "Credit_USD": credits_usd,
-        "Net_EUR": net_eur,
     }
 )
 
