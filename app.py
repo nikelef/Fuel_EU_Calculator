@@ -37,7 +37,7 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Dict, Any
+from typing import Dict, Any, Tuple
 
 import numpy as np
 import pandas as pd
@@ -319,6 +319,9 @@ with st.sidebar:
     st.markdown('<div class="section-title">Exchange rate</div>', unsafe_allow_html=True)
     eur_usd_fx = float_text_input("1 Euro = … USD", _get(DEFAULTS, "eur_usd_fx", 1.00),
                                   key="eur_usd_fx", min_value=0.0)
+    # ── BIO premium (USD/ton vs HSFO)
+    bio_premium_usd_per_t = float_text_input("BIO Premium [USD/ton] vs HSFO", _get(DEFAULTS, "bio_premium_usd_per_t", 0.0),
+                                             key="bio_premium_usd_per_t", min_value=0.0)
     st.divider()
 
     scope_options = ["Intra-EU (100%)", "Extra-EU (50%)"]
@@ -547,7 +550,8 @@ with st.sidebar:
             hsfo_t, lfo_t, mgo_t, bio_t, rfnbo_t = HSFO_voy_t, LFO_voy_t, MGO_voy_t, BIO_voy_t, RFNBO_voy_t
         defaults_to_save = {
             "voyage_type": voyage_type,
-            "eur_usd_fx": eur_usd_fx,  # <── save exchange rate
+            "eur_usd_fx": eur_usd_fx,
+            "bio_premium_usd_per_t": bio_premium_usd_per_t,
             "HSFO_t": hsfo_t, "LFO_t": lfo_t, "MGO_t": mgo_t, "BIO_t": bio_t, "RFNBO_t": rfnbo_t,
             "HSFO_voy_t": HSFO_voy_t, "LFO_voy_t": LFO_voy_t, "MGO_voy_t": MGO_voy_t, "BIO_voy_t": BIO_voy_t, "RFNBO_voy_t": RFNBO_voy_t,
             "HSFO_berth_t": HSFO_berth_t, "LFO_berth_t": LFO_berth_t, "MGO_berth_t": MGO_berth_t, "BIO_berth_t": BIO_berth_t, "RFNBO_berth_t": RFNBO_berth_t,
@@ -912,13 +916,11 @@ for _, row in LIMITS_DF.iterrows():
     else:
         credit_val = penalty_val = 0.0
 
-    # Append EUR & USD
     pool_applied.append(pool_use)
     bank_applied.append(bank_use)
     final_balance_t.append(final_bal)
     penalties_eur.append(penalty_val)
     credits_eur.append(credit_val)
-
     penalties_usd.append(penalty_val * eur_usd_fx)
     credits_usd.append(credit_val * eur_usd_fx)
 
@@ -934,7 +936,208 @@ if info_bank_ignored_no_surplus > 0:
 if info_final_safety_trim > 0:
     st.info(f"Final safety trim applied in {info_final_safety_trim} year(s) to avoid flipping surplus to deficit.")
 
-# Table — (kept column order; penalties/credits now in USD; removed Net_EUR)
+# ──────────────────────────────────────────────────────────────────────────────
+# BIO premium cost (USD) and Total_Cost (USD) per year (using current masses)
+# ──────────────────────────────────────────────────────────────────────────────
+if "Extra-EU" in voyage_type:
+    bio_mass_total_t_base = BIO_voy_t + BIO_berth_t
+else:
+    bio_mass_total_t_base = BIO_voy_t  # for Intra-EU path, _voy_t stores total
+
+bio_premium_cost_usd_base = bio_mass_total_t_base * bio_premium_usd_per_t
+bio_premium_cost_usd_col = [bio_premium_cost_usd_base] * len(years)
+
+# As requested: Total_Cost = Penalty_USD + BIO Premium Cost_USD (credits are not included)
+total_cost_usd_col = [penalties_usd[i] + bio_premium_cost_usd_col[i] for i in range(len(years))]
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Optimizer: per-year HSFO↓ (t) and BIO↑ (t) that minimize Total_Cost
+#   • Keep total energy constant: HSFO↓ * LCV_HSFO = BIO↑ * LCV_BIO  ⇒ BIO↑ = HSFO↓ * LCV_HSFO / LCV_BIO
+#   • For Extra-EU: decrease HSFO from VOY first then BERTH; add BIO at BERTH first then VOY (compliance-favorable).
+#   • Uses the same prices, carry-in, pooling/banking rules for the year.
+#   • Consecutive-deficit multiplier is approximated as 1.0 during optimization (local decision).
+# ──────────────────────────────────────────────────────────────────────────────
+def scoped_and_intensity_from_masses(h_v, l_v, m_v, b_v, r_v, h_b, l_b, m_b, b_b, r_b, elec_MJ, wtw_dict, year) -> Tuple[float,float,float]:
+    """
+    Returns (E_scope_MJ_x, num_phys_x, E_rfnbo_scope_x) for the given masses.
+    """
+    energies_v = {
+        "HSFO": compute_energy_MJ(h_v, LCV_HSFO),
+        "LFO":  compute_energy_MJ(l_v, LCV_LFO),
+        "MGO":  compute_energy_MJ(m_v, LCV_MGO),
+        "BIO":  compute_energy_MJ(b_v, LCV_BIO),
+        "RFNBO":compute_energy_MJ(r_v, LCV_RFNBO),
+    }
+    energies_b = {
+        "HSFO": compute_energy_MJ(h_b, LCV_HSFO),
+        "LFO":  compute_energy_MJ(l_b, LCV_LFO),
+        "MGO":  compute_energy_MJ(m_b, LCV_MGO),
+        "BIO":  compute_energy_MJ(b_b, LCV_BIO),
+        "RFNBO":compute_energy_MJ(r_b, LCV_RFNBO),
+    }
+    if "Extra-EU" in voyage_type:
+        scoped_x = scoped_energies_extra_eu(energies_v, energies_b, elec_MJ, wtw_dict)
+    else:
+        # Intra-EU: all in scope
+        full = {k: energies_v.get(k,0.0) + energies_b.get(k,0.0) for k in ["HSFO","LFO","MGO","BIO","RFNBO"]}
+        scoped_x = {**full, "ELEC": elec_MJ}
+
+    E_scope_x = sum(scoped_x.values())
+    num_phys_x = sum(scoped_x.get(k,0.0) * wtw_dict.get(k,0.0) for k in wtw_dict.keys())
+    E_rfnbo_scope_x = scoped_x.get("RFNBO", 0.0)
+    return E_scope_x, num_phys_x, E_rfnbo_scope_x
+
+def penalty_usd_with_masses_for_year(year_idx: int,
+                                     h_v, l_v, m_v, b_v, r_v,
+                                     h_b, l_b, m_b, b_b, r_b) -> Tuple[float, float]:
+    """
+    Computes (penalty_usd_x, g_att_x) for a given year index and masses variant.
+    Approximates consecutive-deficit multiplier as 1.0 (local decision).
+    """
+    year = years[year_idx]
+    g_target = limit_series[year_idx]
+    E_scope_x, num_phys_x, E_rfnbo_scope_x = scoped_and_intensity_from_masses(
+        h_v, l_v, m_v, b_v, r_v, h_b, l_b, m_b, b_b, r_b, ELEC_MJ, wtw, year
+    )
+    if E_scope_x <= 0:
+        return 0.0, 0.0
+
+    r = 2.0 if year <= 2033 else 1.0
+    den_rwd_x = E_scope_x + (r - 1.0) * E_rfnbo_scope_x
+    g_att_x = (num_phys_x / den_rwd_x) if den_rwd_x > 0 else 0.0
+
+    # Raw compliance balance and effective balance with baseline carry-in for this year
+    CB_g_x = (g_target - g_att_x) * E_scope_x
+    CB_t_raw_x = CB_g_x / 1e6
+    cb_eff_x = CB_t_raw_x + carry_in_list[year_idx]
+
+    # Pooling (cap provide vs pre-surplus)
+    if years[year_idx] >= int(pooling_start_year):
+        if pooling_tco2e_input >= 0:
+            pool_use_x = pooling_tco2e_input
+        else:
+            provide_abs = abs(pooling_tco2e_input)
+            pre_surplus = max(cb_eff_x, 0.0)
+            applied_provide = min(provide_abs, pre_surplus)
+            pool_use_x = -applied_provide
+    else:
+        pool_use_x = 0.0
+
+    # Banking (cap vs pre-surplus)
+    if years[year_idx] >= int(banking_start_year):
+        pre_surplus = max(cb_eff_x, 0.0)
+        requested_bank = max(banking_tco2e_input, 0.0)
+        bank_use_x = min(requested_bank, pre_surplus)
+    else:
+        bank_use_x = 0.0
+
+    # Safety clamp
+    final_bal_x = cb_eff_x + pool_use_x - bank_use_x
+    if final_bal_x < 0:
+        needed = -final_bal_x
+        trim_bank = min(needed, bank_use_x)
+        bank_use_x -= trim_bank
+        needed -= trim_bank
+        if needed > 0 and pool_use_x < 0:
+            pool_use_x += needed
+            needed = 0.0
+        final_bal_x = cb_eff_x + pool_use_x - bank_use_x
+
+    # Penalty (multiplier ~ 1.0 here for tractability)
+    if final_bal_x < 0:
+        penalty_eur_x = euros_from_tco2e(-final_bal_x, g_att_x, penalty_price_eur_per_vlsfo_t) * 1.0
+        penalty_usd_x = penalty_eur_x * eur_usd_fx
+    else:
+        penalty_usd_x = 0.0
+
+    return penalty_usd_x, g_att_x
+
+def masses_after_shift(x_hsfo_decrease: float) -> Tuple[float,float,float,float,float,float,float,float,float,float]:
+    """
+    Apply HSFO decrease (t) and BIO increase (t) while keeping energy constant.
+    For Extra-EU: remove HSFO from VOY first, then BERTH; add BIO to BERTH first, then VOY.
+    Returns tuple: (h_v, l_v, m_v, b_v, r_v, h_b, l_b, m_b, b_b, r_b)
+    """
+    x = max(0.0, float(x_hsfo_decrease))
+    hsfo_total = HSFO_voy_t + HSFO_berth_t
+    x = min(x, hsfo_total)  # cannot reduce more than available
+
+    # Compute BIO increase to keep energy constant:
+    bio_increase_t = x * (LCV_HSFO / LCV_BIO) if LCV_BIO > 0 else 0.0
+
+    # Start from current masses
+    h_v, h_b = HSFO_voy_t, HSFO_berth_t
+    b_v, b_b = BIO_voy_t, BIO_berth_t
+    l_v, m_v, r_v = LFO_voy_t, MGO_voy_t, RFNBO_voy_t
+    l_b, m_b, r_b = LFO_berth_t, MGO_berth_t, RFNBO_berth_t
+
+    if "Extra-EU" in voyage_type:
+        # Reduce HSFO: VOY first, then BERTH
+        take_v = min(x, h_v)
+        h_v -= take_v
+        rem = x - take_v
+        h_b = max(0.0, h_b - rem)
+
+        # Add BIO: BERTH first, then VOY
+        add_b = min(bio_increase_t, float("inf"))
+        b_b += add_b
+        rem_bio = bio_increase_t - add_b
+        if rem_bio > 0:
+            b_v += rem_bio
+    else:
+        # Intra-EU: use the "voy" fields as totals
+        h_v = max(0.0, h_v - x)
+        b_v += bio_increase_t
+        # berth fields remain zero by construction
+
+    return h_v, l_v, m_v, b_v, r_v, h_b, l_b, m_b, b_b, r_b
+
+# Search per year (grid search: coarse → refine)
+hsfo_dec_opt_list, bio_inc_opt_list = [], []
+for i in range(len(years)):
+    hsfo_total_avail = HSFO_voy_t + HSFO_berth_t
+    if hsfo_total_avail <= 0 or LCV_BIO <= 0:
+        hsfo_dec_opt_list.append(0.0)
+        bio_inc_opt_list.append(0.0)
+        continue
+
+    # Coarse grid
+    steps_coarse = 60
+    x_max = hsfo_total_avail
+    best_x, best_cost = 0.0, float("inf")
+
+    for s in range(steps_coarse + 1):
+        x = x_max * s / steps_coarse
+        masses = masses_after_shift(x)
+        penalty_usd_x, _gatt = penalty_usd_with_masses_for_year(i, *masses)
+        # Premium cost uses new total BIO mass
+        new_bio_total_t = (masses[3] + masses[8]) if "Extra-EU" in voyage_type else masses[3]
+        total_cost_x = penalty_usd_x + new_bio_total_t * bio_premium_usd_per_t
+        if total_cost_x < best_cost:
+            best_cost, best_x = total_cost_x, x
+
+    # Refine around best_x ± 2 coarse steps
+    delta = x_max / steps_coarse * 2.0
+    left = max(0.0, best_x - delta)
+    right = min(x_max, best_x + delta)
+    steps_fine = 80
+    for s in range(steps_fine + 1):
+        x = left + (right - left) * s / steps_fine
+        masses = masses_after_shift(x)
+        penalty_usd_x, _gatt = penalty_usd_with_masses_for_year(i, *masses)
+        new_bio_total_t = (masses[3] + masses[8]) if "Extra-EU" in voyage_type else masses[3]
+        total_cost_x = penalty_usd_x + new_bio_total_t * bio_premium_usd_per_t
+        if total_cost_x < best_cost:
+            best_cost, best_x = total_cost_x, x
+
+    hsfo_dec_opt = best_x
+    bio_inc_opt = hsfo_dec_opt * (LCV_HSFO / LCV_BIO) if LCV_BIO > 0 else 0.0
+    hsfo_dec_opt_list.append(hsfo_dec_opt)
+    bio_inc_opt_list.append(bio_inc_opt)
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Table — add BIO Premium Cost + Total_Cost + Optimizer outputs
+# ──────────────────────────────────────────────────────────────────────────────
 df_cost = pd.DataFrame(
     {
         "Year": years,
@@ -950,6 +1153,10 @@ df_cost = pd.DataFrame(
         "Final_Balance_tCO2e_for_€": final_balance_t,
         "Penalty_USD": penalties_usd,
         "Credit_USD": credits_usd,
+        "BIO Premium Cost_USD": bio_premium_cost_usd_col,
+        "Total_Cost": total_cost_usd_col,  # USD
+        "HSFO_decrease(t)_for_Opt_Cost": hsfo_dec_opt_list,
+        "BIO_Increase(t)_For_Opt_Cost": bio_inc_opt_list,
     }
 )
 
