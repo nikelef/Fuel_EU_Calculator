@@ -1,56 +1,62 @@
-# FuelEU Maritime — GHG Intensity & Cost (First Cut)
+# FuelEU Maritime — GHG Intensity & Cost Calculator (2025–2050)
 
-A minimal Streamlit app to help you **visualize FuelEU Maritime limits (2025–2050)**, compute
-your **mix GHG intensity (WtW, gCO₂e/MJ)** from user‑entered fuel quantities and LCVs,
-and estimate **FuelEU penalties/credits** and **BIO premium economics**.
+Single‑vessel Streamlit application to compute **attained GHG intensity** (WtW), compare it to the **FuelEU Maritime limit** for 2025–2050 (derived from the **2020 baseline 91.16 gCO₂e/MJ**), and estimate **compliance costs or credits in EUR**. The app supports **Intra‑EU** and **Extra‑EU** scoping, **RFNBO reward (×2 in the denominator through 2033)**, and operational levers including **Banking** and **Pooling** with rigorous caps and a **consecutive‑deficit penalty multiplier**.
 
-> **Assumptions**
->
-> * Baseline (2020): **91.16 gCO₂e/MJ**.
-> * Reduction steps (limit plateaus): **2% (2025–2029), 6% (2030–2034), 14.5% (2035–2039), 31% (2040–2044), 62% (2045–2049), 80% (2050)**.
-> * Penalty (Annex IV, simplified):  
->   `Penalty(€) = max(0, −CB) / (GHG_actual * 41,000) * 2,400`,  
->   where `CB (gCO₂e) = (Target − Actual) * Energy_MJ_in_scope`.
-> * Voyage scope: **100%** of energy for **Intra‑EU** voyages; **50%** for **Extra‑EU** voyages.
+> **Status:** Production‑ready for internal use. EUR‑only. Numbers are **WtW**; electricity at‑berth (EU OPS) is assumed **0 gCO₂e/MJ**.
 
-## Run locally
+---
 
-```bash
-# 1) Create env (optional)
-python -m venv .venv && source .venv/bin/activate   # (Windows: .venv\Scripts\activate)
+## Key Features
 
-# 2) Install deps
-pip install -r requirements.txt
+* **Scope logic**
 
-# 3) Launch
-streamlit run app.py
-```
+  * **Intra‑EU:** 100% of **all fuels** + **100%** of EU **OPS electricity** (WtW = 0).
+  * **Extra‑EU:** EU OPS **electricity 100%**; fuels split into:
 
-## Deploy to Streamlit Cloud
+    * **At‑berth fuels (EU ports):** **100%** scope
+    * **Voyage fuels:** **50%** scope
 
-1. Push this folder to a GitHub repo.
-2. In Streamlit Cloud, select your repo and set **Main file** to `app.py`.
-3. Set **Python version** to 3.10+.
+* **Extra‑EU allocator (WtW‑prioritized, pool‑then‑fill)**
 
-## Inputs
+  1. Build one in‑scope **fuel pool** = 100% **at‑berth** fuels + **50%** of **total voyage** fuels (electricity always 100% in‑scope, handled separately).
+  2. **Fill** that pool (without changing its total) by WtW priority:
 
-* Voyage scope (Intra‑EU 100% / Extra‑EU 50%).
-* Masses `[t]`, WtW `[gCO₂e/MJ]`, LCV `[MJ/ton]` for **HSFO, LFO, MGO, BIO**.
-* **Fuel to be replaced** by BIO, **Premium** `USD/ton = price(BIO) − price(selected fuel)`,
-  and **Base price** of the selected fuel (used to compute an **energy‑equivalent** cost delta).
-* Optional: **Credit price** (€/VLSFO‑equiv t), **EUR→USD FX**, and **consecutive deficit years** (n).
+     * **Renewables**: **RFNBO vs BIO** — **lower WtW first**; take **at‑berth 100% first**, then **voyage** up to the **spare** pool (leaving room so **all fossil at‑berth** still fit 100%).
+     * **Fossil at‑berth** (HSFO, LFO, MGO): **100%** in ascending WtW.
+     * **Fossil voyage** (HSFO, LFO, MGO): **50%** per fuel in ascending WtW (**partial on the last** if needed).
 
-## Outputs
+* **RFNBO reward (compliance only)**
 
-* **Step plot**: FuelEU **limit** vs. your **mix intensity**, 2025–2050. Title shows **total energy considered (MJ)**.
-* **Tables**:
-  * GHG intensity (mix) per year (with delta to limit),
-  * Emissions (tCO₂e) for the considered scope,
-  * FuelEU **penalty (€)** / **credit (€)** and **net (€)** per year.
-* **Premium economics**: USD cost delta for using BIO vs. the replaced fuel on an **energy‑equivalent** basis.
+  * Through **31 Dec 2033**, **RFNBO** energy counts **×2 in the denominator** (physical emissions unchanged), i.e. `den_rwd = den_phys + RFNBO_energy`.
 
-## Notes
+* **Banking & Pooling (independent)**
 
-* This is a **first cut**. It does **not** yet model RFNBO multipliers, OPS penalties, pooling/banking/borrowing
-  strategies, or verifier‑specific factors. Those can be added next.
-* All numbers are user‑provided; defaults are illustrative only.
+  * **Pooling [tCO₂e]**: `+` uptake applies as entered (can overshoot); `−` provide is **capped** to **pre‑adjustment surplus** (never flips a surplus to deficit).
+  * **Banking to next year [tCO₂e]**: **capped** to **pre‑adjustment surplus**; creates next‑year **carry‑in** equal to the **final banked** amount.
+  * **Start‑year selectors** for both Pooling and Banking.
+
+* **Consecutive‑deficit multiplier (automatic)**
+
+  * **+10%** penalty **per additional consecutive deficit year**. The UI “**seed**” pre‑loads the run length when the **first deficit** appears.
+
+* **Linked market prices**
+
+  * **Credits**: user edits **€/tCO₂e**, app derives **€/VLSFO‑eq t**.
+  * **Penalties**: user edits **€/VLSFO‑eq t**, app derives **€/tCO₂e**.
+  * Conversion uses the **attained intensity** preview:
+    [ tCO₂e/VLSFO_eq_t = (g_{attained} [g/MJ] * 41,000 [MJ/t]) / 10^6 ]
+
+* **UI/formatting**
+
+  * **US number format** (`1,234.56`) everywhere; **no steppers** except for the **seed**.
+  * Clear **Intra‑EU vs Extra‑EU** mass sections and **EU OPS electricity in kWh** (internally → MJ).
+  * Compact data table with **wrapped, centered headers** and **centered values**.
+  * Visuals: **Energy composition (all vs in‑scope)** with connectors & % labels; **GHG Intensity vs Limit** with step labels and dashed “Attained”.
+
+---
+
+## Reduction Steps & Limits (from 2020 baseline 91.16 gCO₂e/MJ)
+
+| Years     | Reduction % | Limit formula |
+| --------- | ----------- | ------------- |
+| 2025–2029 | 2.0%        |               |
