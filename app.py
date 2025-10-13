@@ -418,7 +418,7 @@ with st.sidebar:
     st.text_input("Penalty price €/tCO₂e (derived)", value=us2(penalty_price_eur_per_tco2e_prev), disabled=True)
 
     # ── BIO premium (after credits/penalties as requested)
-    bio_premium_usd_per_t = float_text_input("BIO Premium vs HSFO [USD/ton]", _get(DEFAULTS, "bio_premium_usd_per_t", 0.0),
+    bio_premium_usd_per_t = float_text_input("Premium BIO vs HSFO [USD/ton]", _get(DEFAULTS, "bio_premium_usd_per_t", 0.0),
                                              key="bio_premium_usd_per_t", min_value=0.0)
 
     st.divider()
