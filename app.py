@@ -536,6 +536,7 @@ with st.sidebar:
     st.markdown('<div class="section-title">EU OPS electricity</div>', unsafe_allow_html=True)
     OPS_kWh = float_text_input("Electricity delivered (kWh)", _get_ops_kwh_default(), key="OPS_kWh", min_value=0.0)
     OPS_MJ  = OPS_kWh * 3.6
+    st.text_input("Electricity delivered (MJ) (derived)", value=us2(OPS_MJ), disabled=True)
     # (no extra divider here to keep spacing tight)
 
     # Preview factor (recompute with CURRENT sidebar values; also updates session_state)
