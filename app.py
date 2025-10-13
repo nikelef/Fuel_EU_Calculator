@@ -1150,7 +1150,7 @@ df_cost = pd.DataFrame(
         "Effective_Balance_tCO2e": cb_eff_t,
         "Banked_to_Next_Year_tCO2e": bank_applied,
         "Pooling_tCO2e_Applied": pool_applied,
-        "Final_Balance_tCO2e_for_€": final_balance_t,
+        "Final_Balance_tCO2e": final_balance_t,
         "Penalty_USD": penalties_usd,
         "Credit_USD": credits_usd,
         "BIO Premium Cost_USD": bio_premium_cost_usd_col,
