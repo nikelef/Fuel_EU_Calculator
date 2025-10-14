@@ -145,13 +145,13 @@ def parse_us_any(s: str, default: float = 0.0) -> float:
     except Exception:
         return float(default)
 
-def float_text_input(label: str, default_val: float, key: str, min_value: float = 0.0) -> float:
+def float_text_input(label: str, default_val: float, key: str, min_value: float = 0.0, label_visibility: str = "visible") -> float:
     if key not in st.session_state:
         st.session_state[key] = us2(default_val)
     def _normalize():
         val = parse_us(st.session_state[key], default=default_val, min_value=min_value)
         st.session_state[key] = us2(val)
-    st.text_input(label, value=st.session_state[key], key=key, on_change=_normalize, label_visibility="visible")
+    st.text_input(label, value=st.session_state[key], key=key, on_change=_normalize, label_visibility=label_visibility)
     return parse_us(st.session_state[key], default=default_val, min_value=min_value)
 
 def float_text_input_signed(label: str, default_val: float, key: str) -> float:
@@ -178,7 +178,7 @@ def scoped_energies_extra_eu(energies_fuel_voyage: Dict[str, float],
              - take AT-BERTH part first (100%),
              - then take VOYAGE part but only up to the spare pool after reserving all fossil at-berth.
           2) Fossil AT-BERTH (HSFO, LFO, MGO): 100% in ascending WtW.
-          3) Fossil VOYAGE (HSFO, LFO, MGO): take 50% of each fuel in ascending WtW; partial on the last if needed.
+          3) Fossil VOYAGE (HSFO, LFO, MGO): take 50% of each fuel in ascending WtW; partial on last to close pool.
       • ELEC is always 100% in-scope and excluded from the competition.
     """
     def g(d, k): return float(d.get(k, 0.0))
@@ -417,9 +417,15 @@ with st.sidebar:
     penalty_price_eur_per_tco2e_prev = (penalty_price_eur_per_vlsfo_t / factor_vlsfo_per_tco2e_prev) if factor_vlsfo_per_tco2e_prev > 0 else 0.0
     st.text_input("Penalty price €/tCO₂e (derived)", value=us2(penalty_price_eur_per_tco2e_prev), disabled=True)
 
-    # ── BIO premium (after credits/penalties as requested)
-    bio_premium_usd_per_t = float_text_input("Premium BIO vs HSFO [USD/ton]", _get(DEFAULTS, "bio_premium_usd_per_t", 0.0),
-                                             key="bio_premium_usd_per_t", min_value=0.0)
+    # ── BIO premium (bold label + collapsed input label)
+    st.markdown('<div class="section-title"><span style="font-weight:800;">Premium BIO vs HSFO [USD/ton]</span></div>', unsafe_allow_html=True)
+    bio_premium_usd_per_t = float_text_input(
+        "",
+        _get(DEFAULTS, "bio_premium_usd_per_t", 0.0),
+        key="bio_premium_usd_per_t",
+        min_value=0.0,
+        label_visibility="collapsed"
+    )
 
     st.divider()
 
@@ -495,6 +501,7 @@ with st.sidebar:
         with m5:
             RFNBO_total_t = float_text_input("RFNBO [t]" , _get(DEFAULTS, "RFNBO_t", 0.0),
                                              key="RFNBO_total_t", min_value=0.0)
+        # Map totals to voyage variables for unified downstream handling
         HSFO_voy_t, LFO_voy_t, MGO_voy_t, BIO_voy_t, RFNBO_voy_t = HSFO_total_t, LFO_total_t, MGO_total_t, BIO_total_t, RFNBO_total_t
         HSFO_berth_t = LFO_berth_t = MGO_berth_t = BIO_berth_t = RFNBO_berth_t = 0.0
 
@@ -589,6 +596,15 @@ with st.sidebar:
                         value=int(_get(DEFAULTS, "consecutive_deficit_years", 1)), step=1)
     )
 
+    # NEW — Fuel to reduce (placed exactly here)
+    opt_fuels = ["HSFO", "LFO", "MGO"]
+    _saved_opt_fuel = _get(DEFAULTS, "opt_reduce_fuel", "HSFO")
+    try:
+        _idx = opt_fuels.index(_saved_opt_fuel)
+    except ValueError:
+        _idx = 0
+    selected_fuel_for_opt = st.selectbox("Fuel to reduce (for optimization)", opt_fuels, index=_idx)
+
     # Banking & Pooling (tCO2e)
     st.divider()
     st.markdown('<div class="section-title">Banking & Pooling (tCO₂e)</div>', unsafe_allow_html=True)
@@ -637,6 +653,7 @@ with st.sidebar:
             "pooling_tco2e": pooling_tco2e_input,
             "pooling_start_year": int(pooling_start_year),
             "banking_start_year": int(banking_start_year),
+            "opt_reduce_fuel": selected_fuel_for_opt,
         }
         try:
             with open(DEFAULTS_PATH, "w", encoding="utf-8") as f:
@@ -865,8 +882,6 @@ for _, row in LIMITS_DF.iterrows():
     cb_eff_t.append(cb_eff)
 
     # Pooling
-    if year >= int(banking_start_year):
-        pass
     if year >= int(pooling_start_year):
         if pooling_tco2e_input >= 0:
             pool_use = pooling_tco2e_input
@@ -921,7 +936,7 @@ for _, row in LIMITS_DF.iterrows():
 
     # € → USD
     if final_bal > 0:
-        credit_val = euros_from_tco2e(final_bal, g_att, penalty_price_eur_per_vlsfo_t * 0.0 + (credit_per_tco2e * st.session_state["factor_vlsfo_per_tco2e"] if st.session_state["factor_vlsfo_per_tco2e"]>0 else 0.0))
+        credit_val = euros_from_tco2e(final_bal, g_att, (credit_per_tco2e * st.session_state["factor_vlsfo_per_tco2e"] if st.session_state["factor_vlsfo_per_tco2e"]>0 else 0.0))
         penalty_val = 0.0
     elif final_bal < 0:
         penalty_val = euros_from_tco2e(-final_bal, g_att, penalty_price_eur_per_vlsfo_t) * multiplier_y
@@ -961,7 +976,7 @@ bio_premium_cost_usd_col = [bio_premium_cost_usd_base] * len(years)
 total_cost_usd_col = [penalties_usd[i] + bio_premium_cost_usd_col[i] for i in range(len(years))]
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Optimizer (unchanged)
+# Optimizer utilities (generic fuel → BIO, berth-first BIO placement for Extra-EU)
 # ──────────────────────────────────────────────────────────────────────────────
 def scoped_and_intensity_from_masses(h_v, l_v, m_v, b_v, r_v, h_b, l_b, m_b, b_b, r_b, elec_MJ, wtw_dict, year) -> Tuple[float,float,float]:
     energies_v = {
@@ -1014,8 +1029,7 @@ def penalty_usd_with_masses_for_year(year_idx: int,
         else:
             provide_abs = abs(pooling_tco2e_input)
             pre_surplus = max(cb_eff_x, 0.0)
-            applied_provide = min(provide_abs, pre_surplus)
-            pool_use_x = -applied_provide
+            pool_use_x = -min(provide_abs, pre_surplus)
     else:
         pool_use_x = 0.0
 
@@ -1045,71 +1059,129 @@ def penalty_usd_with_masses_for_year(year_idx: int,
 
     return penalty_usd_x, g_att_x
 
-def masses_after_shift(x_hsfo_decrease: float) -> Tuple[float,float,float,float,float,float,float,float,float,float]:
-    x = max(0.0, float(x_hsfo_decrease))
-    hsfo_total = HSFO_voy_t + HSFO_berth_t
-    x = min(x, hsfo_total)
+def masses_after_shift_generic(fuel: str, x_decrease_t: float) -> Tuple[float,float,float,float,float,float,float,float,float,float]:
+    """
+    Reduce `fuel` mass by x (t) and add BIO mass scaled by LCV ratio to keep MJ constant.
+    Extra-EU policy (as chosen): reduce selected on VOYAGE first, then BERTH; add BIO on BERTH first, then VOYAGE.
+    Returns tuple in the same order as before:
+      (h_v, l_v, m_v, b_v, r_v, h_b, l_b, m_b, b_b, r_b)
+    """
+    # Current masses (working copies)
+    h_v, l_v, m_v, b_v, r_v = HSFO_voy_t, LFO_voy_t, MGO_voy_t, BIO_voy_t, RFNBO_voy_t
+    h_b, l_b, m_b, b_b, r_b = HSFO_berth_t, LFO_berth_t, MGO_berth_t, BIO_berth_t, RFNBO_berth_t
 
-    bio_increase_t = x * (LCV_HSFO / LCV_BIO) if LCV_BIO > 0 else 0.0
+    # Selected fuel references
+    if fuel == "HSFO":
+        s_v, s_b, LCV_S = h_v, h_b, LCV_HSFO
+    elif fuel == "LFO":
+        s_v, s_b, LCV_S = l_v, l_b, LCV_LFO
+    else:  # MGO
+        s_v, s_b, LCV_S = m_v, m_b, LCV_MGO
 
-    h_v, h_b = HSFO_voy_t, HSFO_berth_t
-    b_v, b_b = BIO_voy_t, BIO_berth_t
-    l_v, m_v, r_v = LFO_voy_t, MGO_voy_t, RFNBO_voy_t
-    l_b, m_b, r_b = LFO_berth_t, MGO_berth_t, RFNBO_berth_t
+    # Bound decrease
+    x = max(0.0, float(x_decrease_t))
+    x = min(x, s_v + s_b)
+
+    # BIO mass to add (energy neutrality)
+    bio_increase_t = (x * LCV_S / LCV_BIO) if LCV_BIO > 0 else 0.0
 
     if "Extra-EU" in voyage_type:
-        take_v = min(x, h_v); h_v -= take_v
-        rem = x - take_v; h_b = max(0.0, h_b - rem)
+        # Reduce selected fuel on VOYAGE first, then BERTH
+        take_v = min(x, s_v)
+        s_v -= take_v
+        rem = x - take_v
+        s_b = max(0.0, s_b - rem)
+
+        # Add BIO on BERTH first, then VOYAGE
         add_b = min(bio_increase_t, float("inf"))
         b_b += add_b
         rem_bio = bio_increase_t - add_b
-        if rem_bio > 0: b_v += rem_bio
+        if rem_bio > 0:
+            b_v += rem_bio
     else:
-        h_v = max(0.0, h_v - x)
+        # Intra-EU: single bucket modeled via voyage vars
+        s_v = max(0.0, s_v - x)
         b_v += bio_increase_t
+
+    # Write-back
+    if fuel == "HSFO":
+        h_v, h_b = s_v, s_b
+    elif fuel == "LFO":
+        l_v, l_b = s_v, s_b
+    else:
+        m_v, m_b = s_v, s_b
 
     return h_v, l_v, m_v, b_v, r_v, h_b, l_b, m_b, b_b, r_b
 
-hsfo_dec_opt_list, bio_inc_opt_list = [], []
+# ──────────────────────────────────────────────────────────────────────────────
+# Optimizer (generic fuel → BIO; berth-first BIO placement for Extra-EU)
+# ──────────────────────────────────────────────────────────────────────────────
+dec_opt_list, bio_inc_opt_list = [], []
+
 for i in range(len(years)):
-    hsfo_total_avail = HSFO_voy_t + HSFO_berth_t
-    if hsfo_total_avail <= 0 or LCV_BIO <= 0:
-        hsfo_dec_opt_list.append(0.0); bio_inc_opt_list.append(0.0); continue
+    # Total available tons of the selected fuel + its LCV
+    if selected_fuel_for_opt == "HSFO":
+        total_avail = HSFO_voy_t + HSFO_berth_t
+        LCV_SEL = LCV_HSFO
+    elif selected_fuel_for_opt == "LFO":
+        total_avail = LFO_voy_t + LFO_berth_t
+        LCV_SEL = LCV_LFO
+    else:
+        total_avail = MGO_voy_t + MGO_berth_t
+        LCV_SEL = LCV_MGO
+
+    if total_avail <= 0 or LCV_BIO <= 0:
+        dec_opt_list.append(0.0)
+        bio_inc_opt_list.append(0.0)
+        continue
 
     steps_coarse = 60
-    x_max = hsfo_total_avail
+    x_max = total_avail
     best_x, best_cost = 0.0, float("inf")
 
+    # Coarse scan
     for s in range(steps_coarse + 1):
         x = x_max * s / steps_coarse
-        masses = masses_after_shift(x)
+        masses = masses_after_shift_generic(selected_fuel_for_opt, x)
         penalty_usd_x, _ = penalty_usd_with_masses_for_year(i, *masses)
-        new_bio_total_t = (masses[3] + masses[8]) if "Extra-EU" in voyage_type else masses[3]
+
+        # New total BIO tons under candidate x
+        if "Extra-EU" in voyage_type:
+            new_bio_total_t = (masses[3] + masses[8])  # b_v + b_b
+        else:
+            new_bio_total_t = masses[3]                # b_v
         total_cost_x = penalty_usd_x + new_bio_total_t * bio_premium_usd_per_t
+
         if total_cost_x < best_cost:
             best_cost, best_x = total_cost_x, x
 
+    # Fine scan around best coarse x
     delta = x_max / steps_coarse * 2.0
     left = max(0.0, best_x - delta)
     right = min(x_max, best_x + delta)
     steps_fine = 80
     for s in range(steps_fine + 1):
         x = left + (right - left) * s / steps_fine
-        masses = masses_after_shift(x)
+        masses = masses_after_shift_generic(selected_fuel_for_opt, x)
         penalty_usd_x, _ = penalty_usd_with_masses_for_year(i, *masses)
-        new_bio_total_t = (masses[3] + masses[8]) if "Extra-EU" in voyage_type else masses[3]
+        if "Extra-EU" in voyage_type:
+            new_bio_total_t = (masses[3] + masses[8])
+        else:
+            new_bio_total_t = masses[3]
         total_cost_x = penalty_usd_x + new_bio_total_t * bio_premium_usd_per_t
         if total_cost_x < best_cost:
             best_cost, best_x = total_cost_x, x
 
-    hsfo_dec_opt = best_x
-    bio_inc_opt = hsfo_dec_opt * (LCV_HSFO / LCV_BIO) if LCV_BIO > 0 else 0.0
-    hsfo_dec_opt_list.append(hsfo_dec_opt)
+    dec_opt = best_x
+    bio_inc_opt = dec_opt * (LCV_SEL / LCV_BIO) if LCV_BIO > 0 else 0.0
+    dec_opt_list.append(dec_opt)
     bio_inc_opt_list.append(bio_inc_opt)
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Table
 # ──────────────────────────────────────────────────────────────────────────────
+decrease_col_name = f"{selected_fuel_for_opt}_decrease(t)_for_Opt_Cost"
+
 df_cost = pd.DataFrame(
     {
         "Year": years,
@@ -1127,7 +1199,7 @@ df_cost = pd.DataFrame(
         "Credit_USD": credits_usd,
         "BIO Premium Cost_USD": bio_premium_cost_usd_col,
         "Total_Cost_USD": total_cost_usd_col,
-        "HSFO_decrease(t)_for_Opt_Cost": hsfo_dec_opt_list,
+        decrease_col_name: dec_opt_list,
         "BIO_Increase(t)_For_Opt_Cost": bio_inc_opt_list,
     }
 )
