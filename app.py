@@ -337,7 +337,7 @@ st.session_state["factor_vlsfo_per_tco2e"] = _compute_preview_factor_first_pass(
 # ──────────────────────────────────────────────────────────────────────────────
 st.set_page_config(page_title="FuelEU Maritime Calculator", layout="wide")
 
-st.title("FuelEU Maritime — GHG Intensity & Cost — TMS DRY - ENVIRONMENTAL")
+st.title("FuelEU Maritime — GHG Intensity & Cost — TMS DRY — ENVIRONMENTAL")
 st.caption("Period: 2025–2050 • Limits derived from 2020 baseline 91.16 gCO₂e/MJ • WtW basis • Prices in EUR")
 
 # Global CSS
