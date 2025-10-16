@@ -1,32 +1,5 @@
 # app.py — FuelEU Maritime Calculator (Simplified, 2025–2050, EUR-only + defaults)
-# Scope logic:
-#   • Intra-EU: 100% of fuels + 100% of EU OPS electricity (WtW = 0)
-#   • Extra-EU: EU OPS electricity 100%; fuels split into:
-#       – At-berth fuels (EU ports): 100% scope
-#       – Voyage fuels: 50% scope
-#     ⤷ Requested allocator (WtW-prioritized, pool-then-fill):
-#         1) Build in-scope fuel pool = 100% at-berth fuels + 50% of total voyage fuels (ELEC always 100% in scope).
-#         2) Fill the pool (without changing its total) by WtW priority:
-#            a) Renewables (RFNBO vs BIO): lower WtW first; at-berth 100% first, then voyage up to spare capacity
-#               (leaving enough room to ensure all fossil at-berth still fit 100%).
-#            b) Fossil at-berth (HSFO, LFO, MGO): 100% in ascending WtW.
-#            c) Fossil voyage  (HSFO, LFO, MGO): 50% per fuel in ascending WtW, partial on the last if needed.
-# RFNBO reward:
-#   • Until end-2033, RFNBO gets a ×2 reward in the intensity denominator (compliance only, not physical emissions).
-# UI/formatting:
-#   • Intra-EU → only “Masses [t] — total (voyage + berth)”
-#   • Extra-EU → “Masses [t] — voyage (excluding at-berth)” + “At-berth masses [t] (EU ports)”
-#   • EU OPS electricity input in kWh (converted to MJ)
-#   • US-format numbers (1,234.56); no +/- steppers except for “Consecutive deficit years (seed)”
-#   • Linked price inputs (see below priorities)
-#   • Energy breakdown labels bigger & bold; numbers smaller to avoid truncation
-#   • Chart: “Attained GHG” dashed; step labels below/above; compact header & margins
-#
-# Added features:
-#   • Pooling price input (€/tCO2e) — used in optimizer and in results.
-#   • Multivariable per-year optimizer that chooses both BIO increase (t) and Pooling (tCO2e).
-#   • New results column: "Pooling(tCO2e)_For_Opt_Cost" (placed after "BIO_Increase(t)_For_Opt_Cost").
-# --------------------------------------------------------------------------------------
+# (Full app — corrected: includes masses_after_shift_generic helper before the optimizer)
 from __future__ import annotations
 
 import json
@@ -164,17 +137,6 @@ def scoped_energies_extra_eu(energies_fuel_voyage: Dict[str, float],
                              energies_fuel_berth: Dict[str, float],
                              elec_MJ: float,
                              wtw: Dict[str, float]) -> Dict[str, float]:
-    """
-    Extra-EU (requested variant, with berth-100% guarantee):
-      • Build one in-scope fuel pool: ELEC (100%) + at-berth fuels (100%) + 50% of *total* voyage fuels
-      • Fill the pool by WtW priority, without changing its total:
-          1) Renewables (RFNBO, BIO), lower WtW first:
-             - take AT-BERTH part first (100%),
-             - then take VOYAGE part but only up to the spare pool after reserving berth fossils.
-          2) Fossil AT-BERTH (HSFO, LFO, MGO): 100% in ascending WtW.
-          3) Fossil VOYAGE (HSFO, LFO, MGO): take 50% of each fuel in ascending WtW; partial on last to close pool.
-      • ELEC is always 100% in-scope and excluded from the competition.
-    """
     def g(d, k): return float(d.get(k, 0.0))
 
     fossils = ["HSFO", "LFO", "MGO"]
@@ -239,7 +201,6 @@ def scoped_energies_extra_eu(energies_fuel_voyage: Dict[str, float],
 
 # ──────────────────────────────────────────────────────────────────────────────
 # PRECOMPUTE PREVIEW FACTOR (for first-render derived fields)
-# Uses session_state if present, otherwise defaults; runs before rendering sidebar.
 # ──────────────────────────────────────────────────────────────────────────────
 def _ss_or_def(key: str, default_val: float) -> float:
     if key in st.session_state:
@@ -250,25 +211,21 @@ def _ss_or_def(key: str, default_val: float) -> float:
     return float(_get(DEFAULTS, key, default_val))
 
 def _compute_preview_factor_first_pass() -> float:
-    # Voyage scope
     voyage_type_saved = st.session_state.get("voyage_type", _get(DEFAULTS, "voyage_type", "Intra-EU (100%)"))
 
-    # LCVs
     LCV_HSFO_pre = _ss_or_def("LCV_HSFO", _get(DEFAULTS, "LCV_HSFO", 40200.0))
     LCV_LFO_pre  = _ss_or_def("LCV_LFO",  _get(DEFAULTS, "LCV_LFO",  42700.0))
     LCV_MGO_pre  = _ss_or_def("LCV_MGO",  _get(DEFAULTS, "LCV_MGO",  42700.0))
     LCV_BIO_pre  = _ss_or_def("LCV_BIO",  _get(DEFAULTS, "LCV_BIO",  38000.0))
     LCV_RFN_pre  = _ss_or_def("LCV_RFNBO",_get(DEFAULTS, "LCV_RFNBO",30000.0))
 
-    # WtW
     W_HSFO_pre = _ss_or_def("WtW_HSFO", _get(DEFAULTS, "WtW_HSFO", 92.78))
-    W_LFO_pre  = _ss_or_def("WtW_LFO",  _get(DEFAULTS, "WtW_LFO",  92.00))
-    W_MGO_pre  = _ss_or_def("WtW_MGO",  _get(DEFAULTS, "WtW_MGO",  93.93))
-    W_BIO_pre  = _ss_or_def("WtW_BIO",  _get(DEFAULTS, "WtW_BIO",  70.00))
+    W_LFO_pre  = _ss_or_def("WtW_LFO",  _get(DEFAULTS, "WtW_LFO", 92.00))
+    W_MGO_pre  = _ss_or_def("WtW_MGO",  _get(DEFAULTS, "WtW_MGO", 93.93))
+    W_BIO_pre  = _ss_or_def("WtW_BIO",  _get(DEFAULTS, "WtW_BIO", 70.00))
     W_RFN_pre  = _ss_or_def("WtW_RFNBO",_get(DEFAULTS, "WtW_RFNBO",20.00))
     wtw_pre = {"HSFO": W_HSFO_pre, "LFO": W_LFO_pre, "MGO": W_MGO_pre, "BIO": W_BIO_pre, "RFNBO": W_RFN_pre, "ELEC": 0.0}
 
-    # Masses + OPS
     OPS_kWh_pre = _ss_or_def("OPS_kWh", _get_ops_kwh_default())
     OPS_MJ_pre  = OPS_kWh_pre * 3.6
 
@@ -716,7 +673,7 @@ def attained_intensity_for_year(y: int) -> float:
     return num_phys / den_rwd if den_rwd > 0 else 0.0
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Top breakdown
+# Top breakdown (metrics & charts) — unchanged
 # ──────────────────────────────────────────────────────────────────────────────
 st.subheader("Energy breakdown (MJ)")
 cA, cB, cC, cD, cE, cF, cG, cH = st.columns(8)
@@ -822,7 +779,7 @@ else:
     st.caption("Intra-EU: all energy is in scope. Bars ordered by ELEC then ascending WtW; dashed labels should read 100% for each fuel.")
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Plot
+# Plot (GHG intensity vs limit)
 # ──────────────────────────────────────────────────────────────────────────────
 st.markdown('<h2 style="margin:0 0 .25rem 0;">GHG Intensity vs. FuelEU Limit (2025–2050)</h2>', unsafe_allow_html=True)
 years = LIMITS_DF["Year"].tolist()
@@ -1010,7 +967,67 @@ def scoped_and_intensity_from_masses(h_v, l_v, m_v, b_v, r_v, h_b, l_b, m_b, b_b
     return E_scope_x, num_phys_x, E_rfnbo_scope_x
 
 # ──────────────────────────────────────────────────────────────────────────────
+# MISSING helper (added): masses_after_shift_generic
+# Reduces selected fossil by x_t and adds BIO energy-neutral. Berth-first BIO placement for Extra-EU.
+# Returns tuple: (h_v, l_v, m_v, b_v, r_v, h_b, l_b, m_b, b_b, r_b)
+# ──────────────────────────────────────────────────────────────────────────────
+def masses_after_shift_generic(fuel: str, x_decrease_t: float) -> Tuple[float,float,float,float,float,float,float,float,float,float]:
+    """
+    Reduce `fuel` mass by x (t) and add BIO mass scaled by LCV ratio to keep MJ constant.
+    Extra-EU policy (as chosen): reduce selected on VOYAGE first, then BERTH; add BIO on BERTH first, then VOYAGE.
+    Returns tuple in the same order as before:
+      (h_v, l_v, m_v, b_v, r_v, h_b, l_b, m_b, b_b, r_b)
+    """
+    # Current masses (working copies)
+    h_v, l_v, m_v, b_v, r_v = HSFO_voy_t, LFO_voy_t, MGO_voy_t, BIO_voy_t, RFNBO_voy_t
+    h_b, l_b, m_b, b_b, r_b = HSFO_berth_t, LFO_berth_t, MGO_berth_t, BIO_berth_t, RFNBO_berth_t
+
+    # Selected fuel references
+    if fuel == "HSFO":
+        s_v, s_b, LCV_S = h_v, h_b, LCV_HSFO
+    elif fuel == "LFO":
+        s_v, s_b, LCV_S = l_v, l_b, LCV_LFO
+    else:  # MGO
+        s_v, s_b, LCV_S = m_v, m_b, LCV_MGO
+
+    # Bound decrease
+    x = max(0.0, float(x_decrease_t))
+    x = min(x, s_v + s_b)
+
+    # BIO mass to add (energy neutrality)
+    bio_increase_t = (x * LCV_S / LCV_BIO) if LCV_BIO > 0 else 0.0
+
+    if "Extra-EU" in voyage_type:
+        # Reduce selected fuel on VOYAGE first, then BERTH
+        take_v = min(x, s_v)
+        s_v -= take_v
+        rem = x - take_v
+        s_b = max(0.0, s_b - rem)
+
+        # Add BIO on BERTH first, then VOYAGE
+        add_b = min(bio_increase_t, float("inf"))
+        b_b += add_b
+        rem_bio = bio_increase_t - add_b
+        if rem_bio > 0:
+            b_v += rem_bio
+    else:
+        # Intra-EU: single bucket modeled via voyage vars
+        s_v = max(0.0, s_v - x)
+        b_v += bio_increase_t
+
+    # Write-back
+    if fuel == "HSFO":
+        h_v, h_b = s_v, s_b
+    elif fuel == "LFO":
+        l_v, l_b = s_v, s_b
+    else:
+        m_v, m_b = s_v, s_b
+
+    return h_v, l_v, m_v, b_v, r_v, h_b, l_b, m_b, b_b, r_b
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Evaluator used by optimizer: returns penalty, credits, pooling_cost and final_bal after applying p
+# (same as before)
 # ──────────────────────────────────────────────────────────────────────────────
 def penalty_usd_with_masses_for_year_and_pool(year_idx: int,
                                               h_v, l_v, m_v, b_v, r_v,
@@ -1132,12 +1149,8 @@ for i in range(len(years)):
         continue
 
     # Coarse/fine scanning scheme
-    # Coarse scan first (fast), then fine scan around best with BIO step = 0.1% of total_avail
     steps_coarse = 60
-    # final fine step target: 0.1% of total_avail -> step_size = total_avail * 0.001
-    fine_step_size = max(total_avail * 0.001, 1e-6)  # avoid zero
-    # We'll compute a fine step count dynamically later.
-
+    fine_step_size = max(total_avail * 0.001, 1e-6)
     x_max = total_avail
 
     best_x = 0.0
@@ -1147,11 +1160,6 @@ for i in range(len(years)):
     best_g_att = attained_intensity_for_year(year)
 
     def evaluate_for_x(x_candidate: float) -> Tuple[float, float, float, float, float, float]:
-        """
-        For given x_candidate (t), find the best pooling p (tCO2e) in that year's feasible range
-        and return:
-           (best_total_cost_usd, best_penalty_usd, best_credits_usd, best_pool_cost_usd, best_bio_prem_usd, best_p)
-        """
         masses = masses_after_shift_generic(selected_fuel_for_opt, x_candidate)
 
         # Compute BIO premium USD for candidate x
@@ -1178,40 +1186,31 @@ for i in range(len(years)):
         pre_surplus_local = max(cb_eff_local, 0.0)
 
         # Feasible p range for optimizer:
-        #  - cannot provide more than pre_surplus_local (so p_min = -pre_surplus_local)
-        #  - allow uptake to a practical dynamic upper bound:
-        #      p_max = max(|manual_pooling_input|, pre_surplus_local, total_avail * LCV_SEL / max(LCV_BIO,1) )
-        #    This is a pragmatic dynamic cap to avoid runaway while allowing flexibility.
         if year >= int(pooling_start_year):
             p_min = -pre_surplus_local
-            # allow uptake (positive) up to a practical cap:
-            proxy_pool_from_energy = (total_avail * LCV_SEL) / max(LCV_BIO, 1.0)  # tBIO equivalent proxy (not tCO2e but used as scale)
+            proxy_pool_from_energy = (total_avail * LCV_SEL) / max(LCV_BIO, 1.0)
             p_max = max(abs(pooling_tco2e_input), pre_surplus_local, proxy_pool_from_energy, 1000.0)
         else:
             p_min = p_max = 0.0
 
-        # Candidate p's to evaluate: endpoints, manual pooling input, and p that zeros final balance
+        # Candidate p's to evaluate: endpoints, manual pooling input, p_zero, small grid
         candidates_p = set()
         candidates_p.add(p_min)
         candidates_p.add(p_max)
-        candidates_p.add(float(pooling_tco2e_input))  # include manual as candidate
-        # p_zero solves: cb_eff_local + p - bank_use_local = 0
+        candidates_p.add(float(pooling_tco2e_input))
         requested_bank_local = max(banking_tco2e_input, 0.0) if year >= int(banking_start_year) else 0.0
         bank_use_local = min(requested_bank_local, pre_surplus_local) if year >= int(banking_start_year) else 0.0
         p_zero = bank_use_local - cb_eff_local
         if p_zero >= p_min - 1e-12 and p_zero <= p_max + 1e-12:
             candidates_p.add(p_zero)
-
-        # Also evaluate a small uniform grid (5 points) across range for robustness
         GRID_POINTS = 5
         if p_max > p_min and GRID_POINTS > 0:
             for k in range(GRID_POINTS + 1):
                 p_g = p_min + (p_max - p_min) * k / GRID_POINTS
                 candidates_p.add(p_g)
 
-        # Evaluate each candidate p precisely using canonical function
         local_best_cost = float("inf")
-        local_best_details = (0.0, 0.0, 0.0, 0.0, 0.0)  # cost, pen, cred, pool_cost, p_choice
+        local_best_details = (0.0, 0.0, 0.0, 0.0, 0.0)
         for p_candidate in sorted(candidates_p):
             pen_usd, cred_usd, pool_cost_usd, g_att_eval, final_bal_eval = penalty_usd_with_masses_for_year_and_pool(
                 i, *masses, pool_override=p_candidate
@@ -1231,14 +1230,13 @@ for i in range(len(years)):
             best_cost = total_cost_candidate
             best_x = x
             best_p = p_choice_c
-            best_components = (pen_c, cred_c, pool_cost_c, 0.0)  # bio prem computed later
+            best_components = (pen_c, cred_c, pool_cost_c, 0.0)
             best_g_att = g_att_c
 
     # ----- Fine scan around best_x using BIO step = 0.1% of total_avail -----
     delta = max(x_max / steps_coarse * 2.0, fine_step_size * 10.0)
     left = max(0.0, best_x - delta)
     right = min(x_max, best_x + delta)
-    # compute steps to ensure step size ~ fine_step_size
     if right - left <= 0:
         fine_steps = 1
     else:
@@ -1262,7 +1260,6 @@ for i in range(len(years)):
     pooling_opt_list.append(best_p)
 
     # calculate optimized monetary components for record
-    # we need the bio premium for chosen best_x
     masses_best = masses_after_shift_generic(selected_fuel_for_opt, best_x)
     if "Extra-EU" in voyage_type:
         new_bio_total_t_best = (masses_best[3] + masses_best[8])
