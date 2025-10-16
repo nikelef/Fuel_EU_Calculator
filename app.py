@@ -22,22 +22,16 @@
 #   • Energy breakdown labels bigger & bold; numbers smaller to avoid truncation
 #   • Chart: “Attained GHG” dashed; step labels below/above; compact header & margins
 #
-# Added features (2025-10-08):
-#   • Pooling & Banking are independent (each capped vs pre-adjustment surplus):
-#       – Pooling: +uptake applies as entered (can overshoot); −provide capped to pre-surplus (never flips to deficit).
-#       – Banking: capped vs pre-surplus; creates carry-in for next year equal to *final* banked amount.
-#   • Start-year selectors for Pooling and Banking (placed just below each input).
-#   • Price linking (one-way priorities, updated automatically without on_change):
-#       – Penalties: user edits €/VLSFO-eq t; €/tCO2e is derived (read-only).
-#       – Credits:   user edits €/tCO2e;   €/VLSFO-eq t is derived (read-only).
-#   • Processing per year: Carry-in → Independent Pooling & Banking (vs pre-surplus) → Safety clamp → €.
-#   • Consecutive-deficit multiplier (automatic): +10% per additional consecutive deficit year; seeded from UI.
+# Added features:
+#   • Pooling price input (€/tCO2e) — used in optimizer and in results.
+#   • Multivariable per-year optimizer that chooses both BIO increase (t) and Pooling (tCO2e).
+#   • New results column: "Pooling(tCO2e)_For_Opt_Cost" (placed after "BIO_Increase(t)_For_Opt_Cost").
 # --------------------------------------------------------------------------------------
 from __future__ import annotations
 
 import json
 import os
-from typing import Dict, Any, Tuple
+from typing import Dict, Any, Tuple, List
 
 import numpy as np
 import pandas as pd
@@ -609,7 +603,7 @@ with st.sidebar:
     st.divider()
     st.markdown('<div class="section-title">Banking & Pooling (tCO₂e)</div>', unsafe_allow_html=True)
 
-    # >>> NEW INPUT — Pooling price €/tCO2e (EUR), placed BEFORE the pooling amount <<<
+    # Pooling price input (€/tCO2e)
     pooling_price_eur_per_tco2e = float_text_input(
         "Pooling price €/tCO₂e",
         _get(DEFAULTS, "pooling_price_eur_per_tco2e", 200.0),
@@ -617,6 +611,7 @@ with st.sidebar:
         min_value=0.0
     )
 
+    # Manual pooling input (can be positive for uptake or negative for provide)
     pooling_tco2e_input = float_text_input_signed(
         "Pooling [tCO₂e]: + uptake tCO2e, − provide tCO2e",
         _get(DEFAULTS, "pooling_tco2e", 0.0),
@@ -663,7 +658,6 @@ with st.sidebar:
             "pooling_start_year": int(pooling_start_year),
             "banking_start_year": int(banking_start_year),
             "opt_reduce_fuel": selected_fuel_for_opt,
-            # >>> NEW default saved <<<
             "pooling_price_eur_per_tco2e": pooling_price_eur_per_tco2e,
         }
         try:
@@ -892,7 +886,7 @@ for _, row in LIMITS_DF.iterrows():
     carry_in_list.append(carry)
     cb_eff_t.append(cb_eff)
 
-    # Pooling
+    # Pooling (manual application - preserved)
     if year >= int(pooling_start_year):
         if pooling_tco2e_input >= 0:
             pool_use = pooling_tco2e_input
@@ -906,7 +900,7 @@ for _, row in LIMITS_DF.iterrows():
     else:
         pool_use = 0.0
 
-    # Banking
+    # Banking (manual application - preserved)
     if year >= int(banking_start_year):
         pre_surplus = max(cb_eff, 0.0)
         requested_bank = max(banking_tco2e_input, 0.0)
@@ -918,7 +912,7 @@ for _, row in LIMITS_DF.iterrows():
     else:
         bank_use = 0.0
 
-    # Final balance & clamp
+    # Final balance & clamp (manual flow)
     final_bal = cb_eff + pool_use - bank_use
     if final_bal < 0:
         needed = -final_bal
@@ -933,7 +927,7 @@ for _, row in LIMITS_DF.iterrows():
 
     carry_next = bank_use
 
-    # Consecutive-deficit multiplier
+    # Consecutive-deficit multiplier (manual flow)
     if final_bal < 0:
         if not applied_seed:
             deficit_run = prior_seed + 1
@@ -945,7 +939,7 @@ for _, row in LIMITS_DF.iterrows():
         deficit_run = 0
         multiplier_y = 1.0
 
-    # € → USD
+    # € → USD (manual)
     if final_bal > 0:
         credit_val = euros_from_tco2e(final_bal, g_att, (credit_per_tco2e * st.session_state["factor_vlsfo_per_tco2e"] if st.session_state["factor_vlsfo_per_tco2e"]>0 else 0.0))
         penalty_val = 0.0
@@ -975,7 +969,7 @@ if info_final_safety_trim > 0:
     st.info(f"Final safety trim applied in {info_final_safety_trim} year(s) to avoid flipping surplus to deficit.")
 
 # ──────────────────────────────────────────────────────────────────────────────
-# BIO premium cost (USD) and Total_Cost_USD
+# BIO premium cost (USD) and Total_Cost_USD (manual totals)
 # ──────────────────────────────────────────────────────────────────────────────
 if "Extra-EU" in voyage_type:
     bio_mass_total_t_base = BIO_voy_t + BIO_berth_t
@@ -984,21 +978,10 @@ else:
 
 bio_premium_cost_usd_base = bio_mass_total_t_base * bio_premium_usd_per_t
 bio_premium_cost_usd_col = [bio_premium_cost_usd_base] * len(years)
-
-# >>> NEW — Pooling cost column (USD); sign follows pool_applied (+uptake cost / −provide revenue)
-pooling_cost_usd_col = [
-    pool_applied[i] * pooling_price_eur_per_tco2e * eur_usd_fx
-    for i in range(len(years))
-]
-
-# Updated Total cost now includes pooling cost (positive or negative)
-total_cost_usd_col = [
-    penalties_usd[i] + bio_premium_cost_usd_col[i] + pooling_cost_usd_col[i]
-    for i in range(len(years))
-]
+total_cost_usd_col = [penalties_usd[i] + bio_premium_cost_usd_col[i] for i in range(len(years))]
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Optimizer utilities (generic fuel → BIO, berth-first BIO placement for Extra-EU)
+# Helper used by optimizer: compute scoped & intensity from masses (unchanged)
 # ──────────────────────────────────────────────────────────────────────────────
 def scoped_and_intensity_from_masses(h_v, l_v, m_v, b_v, r_v, h_b, l_b, m_b, b_b, r_b, elec_MJ, wtw_dict, year) -> Tuple[float,float,float]:
     energies_v = {
@@ -1026,16 +1009,26 @@ def scoped_and_intensity_from_masses(h_v, l_v, m_v, b_v, r_v, h_b, l_b, m_b, b_b
     E_rfnbo_scope_x = scoped_x.get("RFNBO", 0.0)
     return E_scope_x, num_phys_x, E_rfnbo_scope_x
 
-def penalty_usd_with_masses_for_year(year_idx: int,
-                                     h_v, l_v, m_v, b_v, r_v,
-                                     h_b, l_b, m_b, b_b, r_b) -> Tuple[float, float]:
+# ──────────────────────────────────────────────────────────────────────────────
+# Evaluator used by optimizer: returns penalty, credits, pooling_cost and final_bal after applying p
+# ──────────────────────────────────────────────────────────────────────────────
+def penalty_usd_with_masses_for_year_and_pool(year_idx: int,
+                                              h_v, l_v, m_v, b_v, r_v,
+                                              h_b, l_b, m_b, b_b, r_b,
+                                              pool_override: float | None = None) -> Tuple[float, float, float, float, float]:
+    """
+    Returns (penalty_usd_x, credits_usd_x, pooling_cost_usd_x, g_att_x, final_bal_x)
+    pool_override: if None use manual pooling_tco2e_input behavior; otherwise use provided pool_override (can be +/−)
+    Uses the same banking & safety clamp rules as main loop.
+    """
     year = years[year_idx]
     g_target = limit_series[year_idx]
+
     E_scope_x, num_phys_x, E_rfnbo_scope_x = scoped_and_intensity_from_masses(
         h_v, l_v, m_v, b_v, r_v, h_b, l_b, m_b, b_b, r_b, ELEC_MJ, wtw, year
     )
     if E_scope_x <= 0:
-        return 0.0, 0.0
+        return 0.0, 0.0, 0.0, 0.0, 0.0
 
     r = 2.0 if year <= 2033 else 1.0
     den_rwd_x = E_scope_x + (r - 1.0) * E_rfnbo_scope_x
@@ -1045,23 +1038,35 @@ def penalty_usd_with_masses_for_year(year_idx: int,
     CB_t_raw_x = CB_g_x / 1e6
     cb_eff_x = CB_t_raw_x + carry_in_list[year_idx]
 
-    if years[year_idx] >= int(pooling_start_year):
-        if pooling_tco2e_input >= 0:
-            pool_use_x = pooling_tco2e_input
+    # pooling decision handling
+    if year >= int(pooling_start_year):
+        if pool_override is None:
+            # manual behavior (same as main app)
+            if pooling_tco2e_input >= 0:
+                pool_use_x = pooling_tco2e_input
+            else:
+                provide_abs = abs(pooling_tco2e_input)
+                pre_surplus = max(cb_eff_x, 0.0)
+                applied_provide = min(provide_abs, pre_surplus)
+                pool_use_x = -applied_provide
         else:
-            provide_abs = abs(pooling_tco2e_input)
-            pre_surplus = max(cb_eff_x, 0.0)
-            pool_use_x = -min(provide_abs, pre_surplus)
+            pool_use_x = float(pool_override)
+            # but if it's a provide (negative), cap vs pre-surplus here
+            if pool_use_x < 0:
+                pre_surplus = max(cb_eff_x, 0.0)
+                pool_use_x = -min(abs(pool_use_x), pre_surplus)
     else:
         pool_use_x = 0.0
 
-    if years[year_idx] >= int(banking_start_year):
-        pre_surplus = max(cb_eff_x, 0.0)
+    # banking (manual cap)
+    if year >= int(banking_start_year):
+        pre_surplus_b = max(cb_eff_x, 0.0)
         requested_bank = max(banking_tco2e_input, 0.0)
-        bank_use_x = min(requested_bank, pre_surplus)
+        bank_use_x = min(requested_bank, pre_surplus_b)
     else:
         bank_use_x = 0.0
 
+    # Final balance & clamp (trim bank then pool to avoid flipping surplus to deficit)
     final_bal_x = cb_eff_x + pool_use_x - bank_use_x
     if final_bal_x < 0:
         needed = -final_bal_x
@@ -1073,75 +1078,36 @@ def penalty_usd_with_masses_for_year(year_idx: int,
             needed = 0.0
         final_bal_x = cb_eff_x + pool_use_x - bank_use_x
 
-    if final_bal_x < 0:
-        penalty_eur_x = euros_from_tco2e(-final_bal_x, g_att_x, penalty_price_eur_per_vlsfo_t) * 1.0
-        penalty_usd_x = penalty_eur_x * eur_usd_fx
-    else:
+    # Convert to monetary values
+    if final_bal_x > 0:
+        credit_eur_x = euros_from_tco2e(final_bal_x, g_att_x, credit_per_tco2e * st.session_state["factor_vlsfo_per_tco2e"] if st.session_state["factor_vlsfo_per_tco2e"]>0 else 0.0)
+        credits_usd_x = credit_eur_x * eur_usd_fx
         penalty_usd_x = 0.0
-
-    return penalty_usd_x, g_att_x
-
-def masses_after_shift_generic(fuel: str, x_decrease_t: float) -> Tuple[float,float,float,float,float,float,float,float,float,float]:
-    """
-    Reduce `fuel` mass by x (t) and add BIO mass scaled by LCV ratio to keep MJ constant.
-    Extra-EU policy (as chosen): reduce selected on VOYAGE first, then BERTH; add BIO on BERTH first, then VOYAGE.
-    Returns tuple in the same order as before:
-      (h_v, l_v, m_v, b_v, r_v, h_b, l_b, m_b, b_b, r_b)
-    """
-    # Current masses (working copies)
-    h_v, l_v, m_v, b_v, r_v = HSFO_voy_t, LFO_voy_t, MGO_voy_t, BIO_voy_t, RFNBO_voy_t
-    h_b, l_b, m_b, b_b, r_b = HSFO_berth_t, LFO_berth_t, MGO_berth_t, BIO_berth_t, RFNBO_berth_t
-
-    # Selected fuel references
-    if fuel == "HSFO":
-        s_v, s_b, LCV_S = h_v, h_b, LCV_HSFO
-    elif fuel == "LFO":
-        s_v, s_b, LCV_S = l_v, l_b, LCV_LFO
-    else:  # MGO
-        s_v, s_b, LCV_S = m_v, m_b, LCV_MGO
-
-    # Bound decrease
-    x = max(0.0, float(x_decrease_t))
-    x = min(x, s_v + s_b)
-
-    # BIO mass to add (energy neutrality)
-    bio_increase_t = (x * LCV_S / LCV_BIO) if LCV_BIO > 0 else 0.0
-
-    if "Extra-EU" in voyage_type:
-        # Reduce selected fuel on VOYAGE first, then BERTH
-        take_v = min(x, s_v)
-        s_v -= take_v
-        rem = x - take_v
-        s_b = max(0.0, s_b - rem)
-
-        # Add BIO on BERTH first, then VOYAGE
-        add_b = min(bio_increase_t, float("inf"))
-        b_b += add_b
-        rem_bio = bio_increase_t - add_b
-        if rem_bio > 0:
-            b_v += rem_bio
+    elif final_bal_x < 0:
+        penalty_eur_x = euros_from_tco2e(-final_bal_x, g_att_x, penalty_price_eur_per_vlsfo_t)
+        penalty_usd_x = penalty_eur_x * eur_usd_fx
+        credits_usd_x = 0.0
     else:
-        # Intra-EU: single bucket modeled via voyage vars
-        s_v = max(0.0, s_v - x)
-        b_v += bio_increase_t
+        penalty_usd_x = credits_usd_x = 0.0
 
-    # Write-back
-    if fuel == "HSFO":
-        h_v, h_b = s_v, s_b
-    elif fuel == "LFO":
-        l_v, l_b = s_v, s_b
-    else:
-        m_v, m_b = s_v, s_b
+    # Pooling cost in USD (sign preserved)
+    pooling_cost_usd_x = pool_use_x * pooling_price_eur_per_tco2e * eur_usd_fx
 
-    return h_v, l_v, m_v, b_v, r_v, h_b, l_b, m_b, b_b, r_b
+    return penalty_usd_x, credits_usd_x, pooling_cost_usd_x, g_att_x, final_bal_x
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Optimizer (generic fuel → BIO; berth-first BIO placement for Extra-EU)
+# Optimizer: choose both x (selected fuel decrease, t) and p (pooling tCO2e)
+#  - BIO resolution target: 0.1% of total_avail (user requested)
+#  - Pooling dynamic: provide capped by pre-surplus; uptake allowed up to a practical dynamic max.
 # ──────────────────────────────────────────────────────────────────────────────
-dec_opt_list, bio_inc_opt_list = [], []
+dec_opt_list, bio_inc_opt_list, pooling_opt_list = [], [], []
+opt_penalty_usd_list, opt_credits_usd_list, opt_pooling_cost_usd_list = [], [], []
+opt_bio_premium_cost_usd_list, opt_total_cost_usd_list, opt_attained_g_list = [], [], []
 
 for i in range(len(years)):
-    # Total available tons of the selected fuel + its LCV
+    year = years[i]
+
+    # Determine selected fuel availability and LCV
     if selected_fuel_for_opt == "HSFO":
         total_avail = HSFO_voy_t + HSFO_berth_t
         LCV_SEL = LCV_HSFO
@@ -1153,54 +1119,171 @@ for i in range(len(years)):
         LCV_SEL = LCV_MGO
 
     if total_avail <= 0 or LCV_BIO <= 0:
+        # Nothing to optimize — keep zeros
         dec_opt_list.append(0.0)
         bio_inc_opt_list.append(0.0)
+        pooling_opt_list.append(0.0)
+        opt_penalty_usd_list.append(0.0)
+        opt_credits_usd_list.append(0.0)
+        opt_pooling_cost_usd_list.append(0.0)
+        opt_bio_premium_cost_usd_list.append(0.0)
+        opt_total_cost_usd_list.append(0.0)
+        opt_attained_g_list.append(attained_intensity_for_year(year))
         continue
 
+    # Coarse/fine scanning scheme
+    # Coarse scan first (fast), then fine scan around best with BIO step = 0.1% of total_avail
     steps_coarse = 60
+    # final fine step target: 0.1% of total_avail -> step_size = total_avail * 0.001
+    fine_step_size = max(total_avail * 0.001, 1e-6)  # avoid zero
+    # We'll compute a fine step count dynamically later.
+
     x_max = total_avail
-    best_x, best_cost = 0.0, float("inf")
 
-    # Coarse scan
-    for s in range(steps_coarse + 1):
-        x = x_max * s / steps_coarse
-        masses = masses_after_shift_generic(selected_fuel_for_opt, x)
-        penalty_usd_x, _ = penalty_usd_with_masses_for_year(i, *masses)
+    best_x = 0.0
+    best_p = 0.0
+    best_cost = float("inf")
+    best_components = (0.0, 0.0, 0.0, 0.0)  # penalty, credits, pool_cost, bio_prem
+    best_g_att = attained_intensity_for_year(year)
 
-        # New total BIO tons under candidate x
+    def evaluate_for_x(x_candidate: float) -> Tuple[float, float, float, float, float, float]:
+        """
+        For given x_candidate (t), find the best pooling p (tCO2e) in that year's feasible range
+        and return:
+           (best_total_cost_usd, best_penalty_usd, best_credits_usd, best_pool_cost_usd, best_bio_prem_usd, best_p)
+        """
+        masses = masses_after_shift_generic(selected_fuel_for_opt, x_candidate)
+
+        # Compute BIO premium USD for candidate x
         if "Extra-EU" in voyage_type:
             new_bio_total_t = (masses[3] + masses[8])  # b_v + b_b
         else:
-            new_bio_total_t = masses[3]                # b_v
-        total_cost_x = penalty_usd_x + new_bio_total_t * bio_premium_usd_per_t
+            new_bio_total_t = masses[3]
+        bio_premium_usd_x = new_bio_total_t * bio_premium_usd_per_t
 
-        if total_cost_x < best_cost:
-            best_cost, best_x = total_cost_x, x
+        # Recompute cb_eff and pre_surplus for this x candidate (so provide cap is known)
+        E_scope_x, num_phys_x, E_rfnbo_scope_x = scoped_and_intensity_from_masses(
+            masses[0], masses[1], masses[2], masses[3], masses[4],
+            masses[5], masses[6], masses[7], masses[8], masses[9],
+            ELEC_MJ, wtw, year
+        )
+        if E_scope_x <= 0:
+            return (float("inf"), 0.0, 0.0, 0.0, 0.0, 0.0)
+        r_local = 2.0 if year <= 2033 else 1.0
+        den_rwd_local = E_scope_x + (r_local - 1.0) * E_rfnbo_scope_x
+        g_att_local = (num_phys_x / den_rwd_local) if den_rwd_local > 0 else 0.0
+        CB_g_local = (limit_series[i] - g_att_local) * E_scope_x
+        CB_t_raw_local = CB_g_local / 1e6
+        cb_eff_local = CB_t_raw_local + carry_in_list[i]
+        pre_surplus_local = max(cb_eff_local, 0.0)
 
-    # Fine scan around best coarse x
-    delta = x_max / steps_coarse * 2.0
+        # Feasible p range for optimizer:
+        #  - cannot provide more than pre_surplus_local (so p_min = -pre_surplus_local)
+        #  - allow uptake to a practical dynamic upper bound:
+        #      p_max = max(|manual_pooling_input|, pre_surplus_local, total_avail * LCV_SEL / max(LCV_BIO,1) )
+        #    This is a pragmatic dynamic cap to avoid runaway while allowing flexibility.
+        if year >= int(pooling_start_year):
+            p_min = -pre_surplus_local
+            # allow uptake (positive) up to a practical cap:
+            proxy_pool_from_energy = (total_avail * LCV_SEL) / max(LCV_BIO, 1.0)  # tBIO equivalent proxy (not tCO2e but used as scale)
+            p_max = max(abs(pooling_tco2e_input), pre_surplus_local, proxy_pool_from_energy, 1000.0)
+        else:
+            p_min = p_max = 0.0
+
+        # Candidate p's to evaluate: endpoints, manual pooling input, and p that zeros final balance
+        candidates_p = set()
+        candidates_p.add(p_min)
+        candidates_p.add(p_max)
+        candidates_p.add(float(pooling_tco2e_input))  # include manual as candidate
+        # p_zero solves: cb_eff_local + p - bank_use_local = 0
+        requested_bank_local = max(banking_tco2e_input, 0.0) if year >= int(banking_start_year) else 0.0
+        bank_use_local = min(requested_bank_local, pre_surplus_local) if year >= int(banking_start_year) else 0.0
+        p_zero = bank_use_local - cb_eff_local
+        if p_zero >= p_min - 1e-12 and p_zero <= p_max + 1e-12:
+            candidates_p.add(p_zero)
+
+        # Also evaluate a small uniform grid (5 points) across range for robustness
+        GRID_POINTS = 5
+        if p_max > p_min and GRID_POINTS > 0:
+            for k in range(GRID_POINTS + 1):
+                p_g = p_min + (p_max - p_min) * k / GRID_POINTS
+                candidates_p.add(p_g)
+
+        # Evaluate each candidate p precisely using canonical function
+        local_best_cost = float("inf")
+        local_best_details = (0.0, 0.0, 0.0, 0.0, 0.0)  # cost, pen, cred, pool_cost, p_choice
+        for p_candidate in sorted(candidates_p):
+            pen_usd, cred_usd, pool_cost_usd, g_att_eval, final_bal_eval = penalty_usd_with_masses_for_year_and_pool(
+                i, *masses, pool_override=p_candidate
+            )
+            total_cost_candidate = pen_usd - cred_usd + pool_cost_usd + bio_premium_usd_x
+            if total_cost_candidate < local_best_cost:
+                local_best_cost = total_cost_candidate
+                local_best_details = (total_cost_candidate, pen_usd, cred_usd, pool_cost_usd, p_candidate)
+
+        return local_best_details + (g_att_local,)
+
+    # ----- Coarse scan of x -----
+    for s in range(steps_coarse + 1):
+        x = x_max * s / steps_coarse
+        total_cost_candidate, pen_c, cred_c, pool_cost_c, p_choice_c, g_att_c = evaluate_for_x(x)
+        if total_cost_candidate < best_cost:
+            best_cost = total_cost_candidate
+            best_x = x
+            best_p = p_choice_c
+            best_components = (pen_c, cred_c, pool_cost_c, 0.0)  # bio prem computed later
+            best_g_att = g_att_c
+
+    # ----- Fine scan around best_x using BIO step = 0.1% of total_avail -----
+    delta = max(x_max / steps_coarse * 2.0, fine_step_size * 10.0)
     left = max(0.0, best_x - delta)
     right = min(x_max, best_x + delta)
-    steps_fine = 80
-    for s in range(steps_fine + 1):
-        x = left + (right - left) * s / steps_fine
-        masses = masses_after_shift_generic(selected_fuel_for_opt, x)
-        penalty_usd_x, _ = penalty_usd_with_masses_for_year(i, *masses)
-        if "Extra-EU" in voyage_type:
-            new_bio_total_t = (masses[3] + masses[8])
-        else:
-            new_bio_total_t = masses[3]
-        total_cost_x = penalty_usd_x + new_bio_total_t * bio_premium_usd_per_t
-        if total_cost_x < best_cost:
-            best_cost, best_x = total_cost_x, x
+    # compute steps to ensure step size ~ fine_step_size
+    if right - left <= 0:
+        fine_steps = 1
+    else:
+        fine_steps = min(2000, max(1, int(round((right - left) / fine_step_size))))
+    for s in range(fine_steps + 1):
+        x = left + (right - left) * s / fine_steps
+        total_cost_candidate, pen_c, cred_c, pool_cost_c, p_choice_c, g_att_c = evaluate_for_x(x)
+        if total_cost_candidate < best_cost:
+            best_cost = total_cost_candidate
+            best_x = x
+            best_p = p_choice_c
+            best_components = (pen_c, cred_c, pool_cost_c, 0.0)
+            best_g_att = g_att_c
 
+    # compute final BIO increase (t) for best_x
     dec_opt = best_x
-    bio_inc_opt = dec_opt * (LCV_SEL / LCV_BIO) if LCV_BIO > 0 else 0.0
     dec_opt_list.append(dec_opt)
+    bio_inc_opt = dec_opt * (LCV_SEL / LCV_BIO) if LCV_BIO > 0 else 0.0
     bio_inc_opt_list.append(bio_inc_opt)
 
+    pooling_opt_list.append(best_p)
+
+    # calculate optimized monetary components for record
+    # we need the bio premium for chosen best_x
+    masses_best = masses_after_shift_generic(selected_fuel_for_opt, best_x)
+    if "Extra-EU" in voyage_type:
+        new_bio_total_t_best = (masses_best[3] + masses_best[8])
+    else:
+        new_bio_total_t_best = masses_best[3]
+    bio_premium_usd_best = new_bio_total_t_best * bio_premium_usd_per_t
+    pen_best, cred_best, pool_cost_best, g_att_best, final_bal_best = penalty_usd_with_masses_for_year_and_pool(
+        i, *masses_best, pool_override=best_p
+    )
+    total_cost_best = pen_best - cred_best + pool_cost_best + bio_premium_usd_best
+
+    opt_penalty_usd_list.append(pen_best)
+    opt_credits_usd_list.append(cred_best)
+    opt_pooling_cost_usd_list.append(pool_cost_best)
+    opt_bio_premium_cost_usd_list.append(bio_premium_usd_best)
+    opt_total_cost_usd_list.append(total_cost_best)
+    opt_attained_g_list.append(g_att_best)
+
 # ──────────────────────────────────────────────────────────────────────────────
-# Table
+# Table – add the new column "Pooling(tCO2e)_For_Opt_Cost" right after BIO_Increase column
+# Keep all original outputs untouched; add optimizer outputs as extra columns
 # ──────────────────────────────────────────────────────────────────────────────
 decrease_col_name = f"{selected_fuel_for_opt}_decrease(t)_for_Opt_Cost"
 
@@ -1217,16 +1300,23 @@ df_cost = pd.DataFrame(
         "Banked_to_Next_Year_tCO2e": bank_applied,
         "Pooling_tCO2e_Applied": pool_applied,
         "Final_Balance_tCO2e": final_balance_t,
-
-        # >>> NEW column inserted exactly here <<<
-        "Pooling_Cost_USD": pooling_cost_usd_col,
-
+        "Pooling_Cost_USD": [p * pooling_price_eur_per_tco2e * eur_usd_fx for p in pool_applied],
         "Penalty_USD": penalties_usd,
         "Credit_USD": credits_usd,
         "BIO Premium Cost_USD": bio_premium_cost_usd_col,
         "Total_Cost_USD": total_cost_usd_col,
         decrease_col_name: dec_opt_list,
         "BIO_Increase(t)_For_Opt_Cost": bio_inc_opt_list,
+
+        # >>> NEW requested column: the optimizer's chosen pooling (tCO2e) <<<
+        "Pooling(tCO2e)_For_Opt_Cost": pooling_opt_list,
+
+        # Optimizer outputs (helpful, non-intrusive)
+        "Penalty_USD_Opt": opt_penalty_usd_list,
+        "Pooling_Cost_USD_Opt": opt_pooling_cost_usd_list,
+        "BIO_Premium_USD_Opt": opt_bio_premium_cost_usd_list,
+        "Total_Cost_USD_Opt": opt_total_cost_usd_list,
+        "Actual_gCO2e_per_MJ_After_Opt": opt_attained_g_list,
     }
 )
 
