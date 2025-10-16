@@ -176,7 +176,7 @@ def scoped_energies_extra_eu(energies_fuel_voyage: Dict[str, float],
       • Fill the pool by WtW priority, without changing its total:
           1) Renewables (RFNBO, BIO), lower WtW first:
              - take AT-BERTH part first (100%),
-             - then take VOYAGE part but only up to the spare pool after reserving all fossil at-berth.
+             - then take VOYAGE part but only up to the spare pool after reserving berth fossils.
           2) Fossil AT-BERTH (HSFO, LFO, MGO): 100% in ascending WtW.
           3) Fossil VOYAGE (HSFO, LFO, MGO): take 50% of each fuel in ascending WtW; partial on last to close pool.
       • ELEC is always 100% in-scope and excluded from the competition.
@@ -608,6 +608,15 @@ with st.sidebar:
     # Banking & Pooling (tCO2e)
     st.divider()
     st.markdown('<div class="section-title">Banking & Pooling (tCO₂e)</div>', unsafe_allow_html=True)
+
+    # >>> NEW INPUT — Pooling price €/tCO2e (EUR), placed BEFORE the pooling amount <<<
+    pooling_price_eur_per_tco2e = float_text_input(
+        "Pooling price €/tCO₂e",
+        _get(DEFAULTS, "pooling_price_eur_per_tco2e", 200.0),
+        key="pooling_price_eur_per_tco2e",
+        min_value=0.0
+    )
+
     pooling_tco2e_input = float_text_input_signed(
         "Pooling [tCO₂e]: + uptake tCO2e, − provide tCO2e",
         _get(DEFAULTS, "pooling_tco2e", 0.0),
@@ -654,6 +663,8 @@ with st.sidebar:
             "pooling_start_year": int(pooling_start_year),
             "banking_start_year": int(banking_start_year),
             "opt_reduce_fuel": selected_fuel_for_opt,
+            # >>> NEW default saved <<<
+            "pooling_price_eur_per_tco2e": pooling_price_eur_per_tco2e,
         }
         try:
             with open(DEFAULTS_PATH, "w", encoding="utf-8") as f:
@@ -973,7 +984,18 @@ else:
 
 bio_premium_cost_usd_base = bio_mass_total_t_base * bio_premium_usd_per_t
 bio_premium_cost_usd_col = [bio_premium_cost_usd_base] * len(years)
-total_cost_usd_col = [penalties_usd[i] + bio_premium_cost_usd_col[i] for i in range(len(years))]
+
+# >>> NEW — Pooling cost column (USD); sign follows pool_applied (+uptake cost / −provide revenue)
+pooling_cost_usd_col = [
+    pool_applied[i] * pooling_price_eur_per_tco2e * eur_usd_fx
+    for i in range(len(years))
+]
+
+# Updated Total cost now includes pooling cost (positive or negative)
+total_cost_usd_col = [
+    penalties_usd[i] + bio_premium_cost_usd_col[i] + pooling_cost_usd_col[i]
+    for i in range(len(years))
+]
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Optimizer utilities (generic fuel → BIO, berth-first BIO placement for Extra-EU)
@@ -1195,6 +1217,10 @@ df_cost = pd.DataFrame(
         "Banked_to_Next_Year_tCO2e": bank_applied,
         "Pooling_tCO2e_Applied": pool_applied,
         "Final_Balance_tCO2e": final_balance_t,
+
+        # >>> NEW column inserted exactly here <<<
+        "Pooling_Cost_USD": pooling_cost_usd_col,
+
         "Penalty_USD": penalties_usd,
         "Credit_USD": credits_usd,
         "BIO Premium Cost_USD": bio_premium_cost_usd_col,
