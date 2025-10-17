@@ -1200,6 +1200,42 @@ for i in range(len(years)):
     bio_inc_opt_list.append(bio_inc_opt)
 
 # ──────────────────────────────────────────────────────────────────────────────
+# Optimized-cost recomputation per year (using optimal shifts; pooling cost unchanged)
+# ──────────────────────────────────────────────────────────────────────────────
+penalty_usd_opt_col = []
+bio_premium_cost_usd_opt_col = []
+total_cost_usd_opt_col = []
+
+for i in range(len(years)):
+    x_opt = dec_opt_list[i]
+    if x_opt <= 0.0 or LCV_BIO <= 0.0:
+        # No change vs base for this year
+        penalty_usd_opt = penalties_usd[i]
+        bio_premium_usd_opt = bio_premium_cost_usd_col[i]
+    else:
+        # Apply optimal decrease and energy-neutral BIO increase
+        masses_opt = masses_after_shift_generic(selected_fuel_for_opt, x_opt)
+
+        # Re-derive penalty under optimized masses (carry-in stays as computed in base run)
+        penalty_usd_opt, _ = penalty_usd_with_masses_for_year(i, *masses_opt)
+
+        # Recompute BIO premium under optimized masses
+        if "Extra-EU" in voyage_type:
+            new_bio_total_t_opt = (masses_opt[3] + masses_opt[8])  # b_v + b_b
+        else:
+            new_bio_total_t_opt = masses_opt[3]                    # b_v in the single-bucket model
+
+        bio_premium_usd_opt = new_bio_total_t_opt * bio_premium_usd_per_t
+
+    penalty_usd_opt_col.append(penalty_usd_opt)
+    bio_premium_cost_usd_opt_col.append(bio_premium_usd_opt)
+
+    # Pooling cost remains unchanged
+    total_cost_usd_opt_col.append(
+        penalty_usd_opt + bio_premium_usd_opt + pooling_cost_usd_col[i]
+    )
+
+# ──────────────────────────────────────────────────────────────────────────────
 # Table
 # ──────────────────────────────────────────────────────────────────────────────
 decrease_col_name = f"{selected_fuel_for_opt}_decrease(t)_for_Opt_Cost"
@@ -1218,7 +1254,7 @@ df_cost = pd.DataFrame(
         "Pooling_tCO2e_Applied": pool_applied,
         "Final_Balance_tCO2e": final_balance_t,
 
-        # >>> NEW column inserted exactly here <<<
+        # >>> already present <<<
         "Pooling_Cost_USD": pooling_cost_usd_col,
 
         "Penalty_USD": penalties_usd,
@@ -1227,8 +1263,12 @@ df_cost = pd.DataFrame(
         "Total_Cost_USD": total_cost_usd_col,
         decrease_col_name: dec_opt_list,
         "BIO_Increase(t)_For_Opt_Cost": bio_inc_opt_list,
+
+        # >>> NEW column appended at the end <<<
+        "Total_Cost_USD_Opt": total_cost_usd_opt_col,
     }
 )
+
 
 df_fmt = df_cost.copy()
 for col in df_fmt.columns:
