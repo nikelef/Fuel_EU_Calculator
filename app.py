@@ -738,7 +738,7 @@ with cH: st.metric("RFNBO — in scope", f"{us2(scoped_energies.get('RFNBO',0))}
 # ──────────────────────────────────────────────────────────────────────────────
 # Visual — Two stacked columns with dashed connectors & % labels (centers)
 # ──────────────────────────────────────────────────────────────────────────────
-st.markdown('<h2 style="margin:0 0 .25rem 0;">Energy composition — all vs in-scope</h2>',
+st.markdown('<h2 style="margin:0 0 .25rem 0;">Energy composition (all vs in-scope) </h2>',
             unsafe_allow_html=True)
 
 categories = ["All energy", "In-scope energy"]
