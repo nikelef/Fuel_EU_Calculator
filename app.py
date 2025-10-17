@@ -70,6 +70,13 @@ def limits_by_year() -> pd.DataFrame:
 
 LIMITS_DF = limits_by_year()
 
+# >>> NEW: helper to map year to its step index <<<
+def _step_of_year(y: int) -> int:
+    for i, (s, e, _) in enumerate(REDUCTION_STEPS):
+        if s <= y <= e:
+            return i
+    return -1
+
 # ──────────────────────────────────────────────────────────────────────────────
 # Persistence
 # ──────────────────────────────────────────────────────────────────────────────
@@ -275,7 +282,11 @@ def _compute_preview_factor_first_pass() -> float:
     wtw_pre = {"HSFO": W_HSFO_pre, "LFO": W_LFO_pre, "MGO": W_MGO_pre, "BIO": W_BIO_pre, "RFNBO": W_RFN_pre, "ELEC": 0.0}
 
     # Masses + OPS
-    OPS_kWh_pre = _ss_or_def("OPS_kWh", _get_ops_kwh_default())
+    OPS_kWh_pre = _get_ops_kwh_default()
+    try:
+        OPS_kWh_pre = _ss_or_def("OPS_kWh", OPS_kWh_pre)
+    except Exception:
+        pass
     OPS_MJ_pre  = OPS_kWh_pre * 3.6
 
     if "Extra-EU" in voyage_type_saved:
@@ -874,9 +885,8 @@ info_final_safety_trim = 0
 
 carry = 0.0  # tCO2e banked from previous year only
 
-prior_seed = max(int(consecutive_deficit_years_seed) - 1, 0)
-applied_seed = False
-deficit_run = 0
+# >>> NEW: per-step fixed multiplier store <<<
+fixed_multiplier_by_step = {}  # step_idx -> locked penalty multiplier for that step
 
 for _, row in LIMITS_DF.iterrows():
     year = int(row["Year"])
@@ -933,16 +943,15 @@ for _, row in LIMITS_DF.iterrows():
 
     carry_next = bank_use
 
-    # Consecutive-deficit multiplier
+    # >>> NEW: Penalty multiplier — constant within each regulatory step <<<
     if final_bal < 0:
-        if not applied_seed:
-            deficit_run = prior_seed + 1
-            applied_seed = True
-        else:
-            deficit_run += 1
-        multiplier_y = 1.0 + max(deficit_run - 1, 0) * 0.10
+        step_idx = _step_of_year(year)
+        if step_idx not in fixed_multiplier_by_step:
+            # seed==1 -> 1.00; seed==2 -> 1.10; etc.
+            start_count = max(int(consecutive_deficit_years_seed), 1)
+            fixed_multiplier_by_step[step_idx] = 1.0 + (start_count - 1) * 0.10
+        multiplier_y = fixed_multiplier_by_step[step_idx]
     else:
-        deficit_run = 0
         multiplier_y = 1.0
 
     # € → USD
@@ -1074,7 +1083,11 @@ def penalty_usd_with_masses_for_year(year_idx: int,
         final_bal_x = cb_eff_x + pool_use_x - bank_use_x
 
     if final_bal_x < 0:
-        penalty_eur_x = euros_from_tco2e(-final_bal_x, g_att_x, penalty_price_eur_per_vlsfo_t) * 1.0
+        # >>> NEW: same constant-within-step logic driven by the seed <<<
+        step_idx = _step_of_year(year)
+        start_count = max(int(consecutive_deficit_years_seed), 1)
+        step_mult = 1.0 + (start_count - 1) * 0.10
+        penalty_eur_x = euros_from_tco2e(-final_bal_x, g_att_x, penalty_price_eur_per_vlsfo_t) * step_mult
         penalty_usd_x = penalty_eur_x * eur_usd_fx
     else:
         penalty_usd_x = 0.0
