@@ -1,24 +1,10 @@
-# app.py — FuelEU Maritime Calculator (ABS segments, prioritized per cross-border segments, pooled final from segment sums)
+# app.py — FuelEU Maritime Calculator (ABS segments, prioritized per cross-border segments, pooled final from segment sums, $ badges)
 # Updates per request (2025-10-23):
-#   1) Per-segment toggle “Apply prioritized allocation” now applies to ALL fuels (RFNBO, BIO, HSFO, LFO, MGO)
-#      by ascending WtW for the two cross-border types: "EU→non-EU voyage" and "non-EU→EU voyage".
-#      For these segments:
-#         • Toggle ON  → fill the 50% in-scope POOL (half of total segment energy) by WtW priority (lowest first),
-#                        taking from each fuel up to its available energy until the pool is full.
-#         • Toggle OFF → simple 50% of each fuel (classic).
-#      Intra-EU = 100%. EU at-berth = 100% + OPS electricity (MJ) at 100% scope.
-#   2) The “Combined energy (All segments)”:
-#         • The "All energy" and "In-scope energy" stacks are computed by SUMMING the corresponding per-segment
-#           All and In-scope energies (including OPS only from EU-berth segments).
-#         • The Combined "In-scope energy" is then used to compute the FINAL attained GHG intensity (with RFNBO
-#           reward per year) and all compliance results & penalties. No separate global pooling is applied.
-#   3) All original functionality kept: banking, pooling, optimizer (note: optimizer still evaluates with a pooled
-#      allocator approximation for candidate mixes; main results/plot use the combined per-segment in-scope sums).
-#
-# Notes:
-#   • Derived price fields are non-zero: use preview intensity with RFNBO×2 for €/VLSFO-eq t factor.
-#   • OPS lives ONLY in EU at-berth segments (kWh→MJ) and is 100% in-scope with WtW=0.
-#   • Stacks show arrows and % retained, fuels ordered by ascending WtW, original colors, MJ hover text.
+#   • Per-segment toggle “Apply prioritized allocation” applies to ALL fuels (RFNBO, BIO, HSFO, LFO, MGO) by ascending WtW
+#     for cross-border segments ("EU→non-EU voyage", "non-EU→EU voyage"). ON = prioritized 50% pool; OFF = simple 50% each fuel.
+#   • Combined stacks are sums of per-segment All/In-scope. Combined In-scope → final attained GHG (with RFNBO reward) & penalties.
+#   • NEW: Show the applied penalty/credit (USD) as a badge next to every In-scope stack (each segment + the combined stack)
+#           for a user-selected year (selector under “Other settings”). Segment $ is proportional allocation of the applied amount.
 
 from __future__ import annotations
 import json, os
@@ -181,7 +167,7 @@ def prioritized_half_scope_all_fuels(energies_voy: Dict[str, float],
     New per-segment allocator for cross-border segments when toggle is ON:
       • POOL = 50% of TOTAL segment energy (fuels only).
       • Fill the pool by ascending WtW across ALL fuels (RFNBO, BIO, HSFO, LFO, MGO),
-        taking up to each fuel's available energy until pool is full.
+        taking up to each fuel's available energy until the pool is full.
       • No ELEC in voyage segments.
     """
     pool = 0.5 * sum(energies_voy.values())
@@ -328,6 +314,8 @@ with st.sidebar:
     # 4) Other + Optimizer
     st.markdown('<div class="card"><h4>Other settings</h4>', unsafe_allow_html=True)
     consecutive_deficit_years_seed = int(st.number_input("Consecutive deficit years (seed)", min_value=1, value=int(_get(DEFAULTS, "consecutive_deficit_years", 1)), step=1))
+    # NEW: year selector for $ badges near stacks
+    badge_year = st.selectbox("Year for $ badges on stacks", YEARS, index=0)
     opt_fuels = ["HSFO", "LFO", "MGO"]
     try:
         _idx = opt_fuels.index(_get(DEFAULTS, "opt_reduce_fuel", "HSFO"))
@@ -387,7 +375,7 @@ wtw = {"HSFO": WtW_HSFO, "LFO": WtW_LFO, "MGO": WtW_MGO, "BIO": WtW_BIO, "RFNBO"
 LCVs_now = {"HSFO": LCV_HSFO, "LFO": LCV_LFO, "MGO": LCV_MGO, "BIO": LCV_BIO, "RFNBO": LCV_RFNBO}
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Bucket totals (kept for optimizer & CSV endpoints)
+# Bucket totals (for optimizer & CSV endpoints)
 # ──────────────────────────────────────────────────────────────────────────────
 totals_mass, ops_kwh_total = _segments_totals_masses_and_ops()
 ELEC_MJ_input = ops_kwh_total * 3.6
@@ -398,7 +386,7 @@ energies_eu_berth  = _masses_to_energies(totals_mass["eu_berth"],  LCVs_now)
 energies_intra_voy = _masses_to_energies(totals_mass["intra_voy"], LCVs_now)
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Per-segment rendering + build combined sums (ALL and IN-SCOPE from segments)
+# Per-segment scope building (and combined sums from segments)
 # ──────────────────────────────────────────────────────────────────────────────
 COLORS = {  # original palette
     "ELEC":  "#FACC15",
@@ -431,7 +419,6 @@ def _segment_scope_with_toggle(seg: Dict[str,Any], energies_all: Dict[str,float]
         return dict(energies_all), 0.0
     if t == "EU at-berth (port stay)":
         return dict(energies_all), float(seg.get("OPS_kWh",0.0))*3.6
-    # Cross-border
     prio_on = bool(seg.get("prio_on", True))
     if prio_on:
         scoped = prioritized_half_scope_all_fuels(energies_all, wtw)
@@ -439,62 +426,16 @@ def _segment_scope_with_toggle(seg: Dict[str,Any], energies_all: Dict[str,float]
     else:
         return {k: 0.5*energies_all[k] for k in energies_all.keys()}, 0.0
 
-def _stack_with_arrows(title: str, left_vals: Dict[str,float], right_vals: Dict[str,float], show_elec: bool):
-    categories = ["All", "In-scope"]
-    fuels_sorted = sorted(FUELS, key=lambda f: wtw.get(f, float("inf")))
-    stack_layers = ([("ELEC","ELEC (OPS)")] if show_elec else []) + [(f, f) for f in fuels_sorted]
-
-    fig = go.Figure()
-    for key, label in stack_layers:
-        fig.add_trace(
-            go.Bar(
-                x=categories,
-                y=[left_vals.get(key, 0.0), right_vals.get(key, 0.0)],
-                name=label,
-                marker_color=COLORS.get(key, None),
-                hovertemplate=f"{label}<br>%{{x}}<br>%{{y:,.2f}} MJ<extra></extra>",
-            )
-        )
-    total_all = sum(left_vals.get(k,0.0) for k,_ in stack_layers)
-    total_scope = sum(right_vals.get(k,0.0) for k,_ in stack_layers)
-    fig.add_annotation(x=categories[0], y=total_all,  text=f"{us2(total_all)} MJ", showarrow=False, yshift=10, font=dict(size=12))
-    fig.add_annotation(x=categories[1], y=total_scope, text=f"{us2(total_scope)} MJ", showarrow=False, yshift=10, font=dict(size=12))
-
-    # arrows + % retained
-    cum_left = 0.0
-    cum_right = 0.0
-    for key, label in stack_layers:
-        layer_left = float(left_vals.get(key, 0.0))
-        layer_right = float(right_vals.get(key, 0.0))
-        if layer_left <= 0.0 and layer_right <= 0.0:
-            cum_left += layer_left; cum_right += layer_right
-            continue
-        y_center_left = cum_left + (layer_left / 2.0)
-        y_center_right = cum_right + (layer_right / 2.0)
-        fig.add_trace(go.Scatter(x=categories, y=[y_center_left, y_center_right], mode="lines",
-                                 line=dict(dash="dot", width=2), hoverinfo="skip", showlegend=False))
-        fig.add_annotation(x=categories[1], y=y_center_right, ax=categories[0], ay=y_center_left,
-                           xref="x", yref="y", axref="x", ayref="y", text="", showarrow=True,
-                           arrowhead=3, arrowsize=1.2, arrowwidth=2, arrowcolor="rgba(0,0,0,0.65)")
-        pct = (layer_right / layer_left * 100.0) if layer_left > 0 else 100.0
-        pct = max(min(pct, 100.0), 0.0)
-        y_mid = 0.5 * (y_center_left + y_center_right)
-        fig.add_annotation(xref="paper", yref="y", x=0.5, y=y_mid, text=f"{pct:.0f}%", showarrow=False,
-                           font=dict(size=11, color="#374151"),
-                           bgcolor="rgba(255,255,255,0.65)", bordercolor="rgba(0,0,0,0)", borderpad=1)
-        cum_left += layer_left; cum_right += layer_right
-
-    fig.update_layout(
-        title=dict(text=title, x=0.02, y=0.95, font=dict(size=13)),
-        barmode="stack", xaxis_title="", yaxis_title="Energy [MJ]", hovermode="x unified",
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1.0),
-        margin=dict(l=40, r=20, t=50, b=20), bargap=0.35, height=260,
-    )
-    st.plotly_chart(fig, use_container_width=True)
-
-# Build combined sums while rendering per-segment stacks
+# Combined sums built from segments (both All and In-scope)
 combined_all = {"ELEC":0.0, "RFNBO":0.0, "BIO":0.0, "HSFO":0.0, "LFO":0.0, "MGO":0.0}
 combined_scope = {"ELEC":0.0, "RFNBO":0.0, "BIO":0.0, "HSFO":0.0, "LFO":0.0, "MGO":0.0}
+
+# Also keep per-segment in-scope totals to compute $ badges later
+per_segment_scope_totals: List[float] = []
+per_segment_left_vals: List[Dict[str,float]] = []
+per_segment_right_vals: List[Dict[str,float]] = []
+per_segment_show_elec: List[bool] = []
+per_segment_titles: List[str] = []
 
 st.markdown("### Per-segment energy (All vs In-scope)")
 if not st.session_state["abs_segments"]:
@@ -511,7 +452,6 @@ else:
             show_elec = True
         else:
             show_elec = False
-        _stack_with_arrows(f"Segment {i+1}: {seg.get('type','')}", left_vals, right_vals, show_elec)
 
         # accumulate to combined sums
         combined_all["ELEC"]  += left_vals.get("ELEC", 0.0)
@@ -520,8 +460,15 @@ else:
             combined_all[f]   += left_vals.get(f, 0.0)
             combined_scope[f] += right_vals.get(f, 0.0)
 
+        # store for later figure rendering with $ badges
+        per_segment_left_vals.append(left_vals)
+        per_segment_right_vals.append(right_vals)
+        per_segment_scope_totals.append(sum(right_vals.values()))
+        per_segment_show_elec.append(show_elec)
+        per_segment_titles.append(f"Segment {i+1}: {seg.get('type','')}")
+
 # ──────────────────────────────────────────────────────────────────────────────
-# Combined (from segment sums) → metrics, derived prices, stacks, intensity
+# Combined (from segment sums) → metrics, derived prices, intensity
 # ──────────────────────────────────────────────────────────────────────────────
 E_total_MJ = sum(combined_all.values())
 E_scope_MJ = sum(combined_scope.values())
@@ -546,127 +493,9 @@ if g_preview <= 0:
     g_preview = BASELINE_2020_GFI
 tco2e_per_vlsfo_t = (g_preview * 41_000.0) / 1_000_000.0
 
-# Headline metrics (smaller numbers)
-st.subheader("Energy breakdown (MJ)")
-cA, cB, cC, cD, cE, cF, cG, cH = st.columns(8)
-with cA: st.metric("Total energy (all)", f"{us2(E_total_MJ)} MJ")
-with cB: st.metric("In-scope energy", f"{us2(E_scope_MJ)} MJ")
-with cC: st.metric("Fossil — all", f"{us2(combined_all['HSFO'] + combined_all['LFO'] + combined_all['MGO'])} MJ")
-with cD: st.metric("BIO — all", f"{us2(combined_all['BIO'])} MJ")
-with cE: st.metric("RFNBO — all", f"{us2(combined_all['RFNBO'])} MJ")
-with cF: st.metric("Fossil — in scope", f"{us2(combined_scope['HSFO']+combined_scope['LFO']+combined_scope['MGO'])} MJ")
-with cG: st.metric("BIO — in scope", f"{us2(combined_scope['BIO'])} MJ")
-with cH: st.metric("RFNBO — in scope", f"{us2(combined_scope['RFNBO'])} MJ")
-
-# Derived prices card (after we have g_preview)
-with st.sidebar:
-    st.markdown('<div class="card"><h4>Derived prices</h4>', unsafe_allow_html=True)
-    st.text_input("Credit price €/VLSFO-eq t (derived)", value=us2(credit_per_tco2e * tco2e_per_vlsfo_t), disabled=True)
-    st.text_input("Penalty price €/tCO₂e (derived)", value=us2((penalty_price_eur_per_vlsfo_t / tco2e_per_vlsfo_t) if tco2e_per_vlsfo_t>0 else 0.0), disabled=True)
-    st.markdown("</div>", unsafe_allow_html=True)
-
-# Combined stacks from segment sums
-st.markdown("### Combined energy (All segments)")
-categories = ["All energy", "In-scope energy"]
-fuels_sorted_global = sorted(FUELS, key=lambda f: wtw.get(f, float("inf")))
-stack_layers_global = [("ELEC", "ELEC (OPS)")] + [(f, f) for f in fuels_sorted_global]
-
-left_vals = {
-    "ELEC":  combined_all.get("ELEC", 0.0),
-    "RFNBO": combined_all.get("RFNBO", 0.0),
-    "BIO":   combined_all.get("BIO",   0.0),
-    "HSFO":  combined_all.get("HSFO",  0.0),
-    "LFO":   combined_all.get("LFO",   0.0),
-    "MGO":   combined_all.get("MGO",   0.0),
-}
-right_vals = {
-    "ELEC":  combined_scope.get("ELEC",  0.0),
-    "RFNBO": combined_scope.get("RFNBO", 0.0),
-    "BIO":   combined_scope.get("BIO",   0.0),
-    "HSFO":  combined_scope.get("HSFO",  0.0),
-    "LFO":   combined_scope.get("LFO",   0.0),
-    "MGO":   combined_scope.get("MGO",   0.0),
-}
-
-fig_stacks = go.Figure()
-for key, label in stack_layers_global:
-    fig_stacks.add_trace(
-        go.Bar(
-            x=categories,
-            y=[left_vals.get(key, 0.0), right_vals.get(key, 0.0)],
-            name=label,
-            marker_color=COLORS.get(key, None),
-            hovertemplate=f"{label}<br>%{{x}}<br>%{{y:,.2f}} MJ<extra></extra>",
-        )
-    )
-total_all = sum(left_vals.values())
-total_scope = sum(right_vals.values())
-fig_stacks.add_annotation(x=categories[0], y=total_all,  text=f"{us2(total_all)} MJ",  showarrow=False, yshift=10, font=dict(size=12))
-fig_stacks.add_annotation(x=categories[1], y=total_scope, text=f"{us2(total_scope)} MJ", showarrow=False, yshift=10, font=dict(size=12))
-
-cum_left = 0.0
-cum_right = 0.0
-for key, label in stack_layers_global:
-    layer_left = float(left_vals.get(key, 0.0))
-    layer_right = float(right_vals.get(key, 0.0))
-    if layer_left <= 0.0 and layer_right <= 0.0:
-        cum_left += layer_left; cum_right += layer_right
-        continue
-    y_center_left = cum_left + (layer_left / 2.0)
-    y_center_right = cum_right + (layer_right / 2.0)
-    fig_stacks.add_trace(go.Scatter(x=categories, y=[y_center_left, y_center_right], mode="lines",
-                                    line=dict(dash="dot", width=2), hoverinfo="skip", showlegend=False))
-    fig_stacks.add_annotation(x=categories[1], y=y_center_right, ax=categories[0], ay=y_center_left,
-                              xref="x", yref="y", axref="x", ayref="y", text="", showarrow=True,
-                              arrowhead=3, arrowsize=1.2, arrowwidth=2, arrowcolor="rgba(0,0,0,0.65)")
-    pct = (layer_right / layer_left * 100.0) if layer_left > 0 else 100.0
-    pct = max(min(pct, 100.0), 0.0)
-    y_mid = 0.5 * (y_center_left + y_center_right)
-    fig_stacks.add_annotation(xref="paper", yref="y", x=0.5, y=y_mid, text=f"{pct:.0f}%", showarrow=False,
-                              font=dict(size=11, color="#374151"),
-                              bgcolor="rgba(255,255,255,0.65)", bordercolor="rgba(0,0,0,0)", borderpad=1)
-    cum_left += layer_left; cum_right += layer_right
-
-fig_stacks.update_layout(
-    barmode="stack", xaxis_title="", yaxis_title="Energy [MJ]", hovermode="x unified",
-    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1.0),
-    margin=dict(l=40, r=20, t=50, b=20), bargap=0.35,
-)
-st.plotly_chart(fig_stacks, use_container_width=True)
-st.caption("Combined right bar = sum of per-segment in-scope energies (with cross-border prioritized allocation toggle as selected; OPS from EU-berth only).")
-
 # ──────────────────────────────────────────────────────────────────────────────
-# GHG Intensity vs. FuelEU Limit (uses combined in-scope)
+# Compute yearly compliance results NOW (so we can use them in stack badges too)
 # ──────────────────────────────────────────────────────────────────────────────
-st.markdown('### GHG Intensity vs FuelEU Limit (2025–2050)')
-years = LIMITS_DF["Year"].tolist()
-limit_series = LIMITS_DF["Limit_gCO2e_per_MJ"].tolist()
-actual_series = [attained_intensity_for_year(y) for y in years]
-step_years = [2025, 2030, 2035, 2040, 2045, 2050]
-limit_text = [f"{limit_series[i]:,.2f}" if years[i] in step_years else "" for i in range(len(years))]
-attained_text = [f"{actual_series[i]:,.2f}" if years[i] in step_years else "" for i in range(len(years))]
-
-fig = go.Figure()
-fig.add_trace(go.Scatter(x=years, y=limit_series, name="FuelEU Limit (step)",
-                         mode="lines+markers+text", line=dict(shape="hv", width=3),
-                         text=limit_text, textposition="bottom center", textfont=dict(size=12),
-                         hovertemplate="Year=%{x}<br>Limit=%{y:,.2f} gCO₂e/MJ<extra></extra>"))
-fig.add_trace(go.Scatter(x=years, y=actual_series, name="Attained GHG (combined in-scope)",
-                         mode="lines+text", line=dict(dash="dash", width=3),
-                         text=attained_text, textposition="top center", textfont=dict(size=12),
-                         hovertemplate="Year=%{x}<br>Attained=%{y:,.2f} gCO₂e/MJ<extra></extra>"))
-fig.update_yaxes(tickformat=",.2f")
-fig.update_layout(xaxis_title="Year", yaxis_title="GHG Intensity [gCO₂e/MJ]",
-                  hovermode="x unified",
-                  legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1.0),
-                  margin=dict(l=40, r=20, t=50, b=40))
-st.plotly_chart(fig, use_container_width=True)
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Results — Banking/Pooling + optimizer (kept), using combined in-scope intensity
-# ──────────────────────────────────────────────────────────────────────────────
-st.header("Results (merged per-year table)")
-
 cb_raw_t, carry_in_list, cb_eff_t = [], [], []
 pool_applied, bank_applied = [], []
 final_balance_t, penalties_eur, credits_eur, g_att_list = [], [], [], []
@@ -727,7 +556,7 @@ for _, row in LIMITS_DF.iterrows():
     if final_bal < 0:
         step_idx = _step_of_year(year)
         if step_idx not in fixed_multiplier_by_step:
-            seed = max(int(st.session_state.get("consecutive_deficit_years", _get(DEFAULTS,"consecutive_deficit_years",1))), 1)
+            seed = max(int(consecutive_deficit_years_seed), 1)
             fixed_multiplier_by_step[step_idx] = 1.0 + (seed - 1) * 0.10
         mult = fixed_multiplier_by_step[step_idx]
     else:
@@ -761,8 +590,195 @@ pooling_cost_usd_col = [pool_applied[i] * pooling_price_eur_per_tco2e_val * eur_
 total_cost_usd_col = [penalties_usd[i] + bio_premium_cost_usd_col[i] + pooling_cost_usd_col[i] for i in range(len(YEARS))]
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Optimizer utilities (kept as in prior version; uses pooled allocator approximation)
+# Headline metrics (smaller numbers)
 # ──────────────────────────────────────────────────────────────────────────────
+st.subheader("Energy breakdown (MJ)")
+cA, cB, cC, cD, cE, cF, cG, cH = st.columns(8)
+with cA: st.metric("Total energy (all)", f"{us2(E_total_MJ)} MJ")
+with cB: st.metric("In-scope energy", f"{us2(E_scope_MJ)} MJ")
+with cC: st.metric("Fossil — all", f"{us2(combined_all['HSFO'] + combined_all['LFO'] + combined_all['MGO'])} MJ")
+with cD: st.metric("BIO — all", f"{us2(combined_all['BIO'])} MJ")
+with cE: st.metric("RFNBO — all", f"{us2(combined_all['RFNBO'])} MJ")
+with cF: st.metric("Fossil — in scope", f"{us2(combined_scope['HSFO']+combined_scope['LFO']+combined_scope['MGO'])} MJ")
+with cG: st.metric("BIO — in scope", f"{us2(combined_scope['BIO'])} MJ")
+with cH: st.metric("RFNBO — in scope", f"{us2(combined_scope['RFNBO'])} MJ")
+
+# Derived prices card (after we have g_preview)
+with st.sidebar:
+    st.markdown('<div class="card"><h4>Derived prices</h4>', unsafe_allow_html=True)
+    st.text_input("Credit price €/VLSFO-eq t (derived)", value=us2(credit_per_tco2e * tco2e_per_vlsfo_t), disabled=True)
+    st.text_input("Penalty price €/tCO₂e (derived)", value=us2((penalty_price_eur_per_vlsfo_t / tco2e_per_vlsfo_t) if tco2e_per_vlsfo_t>0 else 0.0), disabled=True)
+    st.markdown("</div>", unsafe_allow_html=True)
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Stack plotting helpers WITH $ badge on the In-scope column
+# ──────────────────────────────────────────────────────────────────────────────
+def _stack_with_arrows_and_badge(title: str,
+                                 left_vals: Dict[str,float],
+                                 right_vals: Dict[str,float],
+                                 show_elec: bool,
+                                 badge_text: str | None):
+    categories = ["All", "In-scope"]
+    fuels_sorted = sorted(FUELS, key=lambda f: wtw.get(f, float("inf")))
+    stack_layers = ([("ELEC","ELEC (OPS)")] if show_elec else []) + [(f, f) for f in fuels_sorted]
+
+    fig = go.Figure()
+    for key, label in stack_layers:
+        fig.add_trace(
+            go.Bar(
+                x=categories,
+                y=[left_vals.get(key, 0.0), right_vals.get(key, 0.0)],
+                name=label,
+                marker_color=COLORS.get(key, None),
+                hovertemplate=f"{label}<br>%{{x}}<br>%{{y:,.2f}} MJ<extra></extra>",
+            )
+        )
+    total_all = sum(left_vals.get(k,0.0) for k,_ in stack_layers)
+    total_scope = sum(right_vals.get(k,0.0) for k,_ in stack_layers)
+    fig.add_annotation(x=categories[0], y=total_all,  text=f"{us2(total_all)} MJ", showarrow=False, yshift=10, font=dict(size=12))
+    fig.add_annotation(x=categories[1], y=total_scope, text=f"{us2(total_scope)} MJ", showarrow=False, yshift=10, font=dict(size=12))
+
+    # arrows + % retained
+    cum_left = 0.0
+    cum_right = 0.0
+    for key, label in stack_layers:
+        layer_left = float(left_vals.get(key, 0.0))
+        layer_right = float(right_vals.get(key, 0.0))
+        if layer_left <= 0.0 and layer_right <= 0.0:
+            cum_left += layer_left; cum_right += layer_right
+            continue
+        y_center_left = cum_left + (layer_left / 2.0)
+        y_center_right = cum_right + (layer_right / 2.0)
+        fig.add_trace(go.Scatter(x=categories, y=[y_center_left, y_center_right], mode="lines",
+                                 line=dict(dash="dot", width=2), hoverinfo="skip", showlegend=False))
+        fig.add_annotation(x=categories[1], y=y_center_right, ax=categories[0], ay=y_center_left,
+                           xref="x", yref="y", axref="x", ayref="y", text="", showarrow=True,
+                           arrowhead=3, arrowsize=1.2, arrowwidth=2, arrowcolor="rgba(0,0,0,0.65)")
+        pct = (layer_right / layer_left * 100.0) if layer_left > 0 else 100.0
+        pct = max(min(pct, 100.0), 0.0)
+        y_mid = 0.5 * (y_center_left + y_center_right)
+        fig.add_annotation(xref="paper", yref="y", x=0.5, y=y_mid, text=f"{pct:.0f}%", showarrow=False,
+                           font=dict(size=11, color="#374151"),
+                           bgcolor="rgba(255,255,255,0.65)", bordercolor="rgba(0,0,0,0)", borderpad=1)
+        cum_left += layer_left; cum_right += layer_right
+
+    # $ badge
+    if badge_text and total_scope > 0:
+        fig.add_annotation(x=categories[1], y=total_scope, text=badge_text,
+                           showarrow=False, yshift=28, font=dict(size=12, color="#111827"),
+                           bgcolor="rgba(241,245,249,0.9)", bordercolor="#CBD5E1", borderpad=4)
+
+    fig.update_layout(
+        title=dict(text=title, x=0.02, y=0.95, font=dict(size=13)),
+        barmode="stack", xaxis_title="", yaxis_title="Energy [MJ]", hovermode="x unified",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1.0),
+        margin=dict(l=40, r=20, t=60, b=20), bargap=0.35, height=270,
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+# Determine the applied $ amount for selected year to build badges
+badge_year_idx = YEARS.index(int(badge_year))
+applied_penalty_usd_year = penalties_usd[badge_year_idx]
+applied_credit_usd_year  = credits_usd[badge_year_idx]
+applied_label_total = None
+if applied_penalty_usd_year > 0:
+    applied_label_total = f"Penalty ${us2(applied_penalty_usd_year)}"
+elif applied_credit_usd_year > 0:
+    applied_label_total = f"Credit ${us2(applied_credit_usd_year)}"
+else:
+    applied_label_total = "No charge $0.00"
+
+# Render per-segment stacks *with* badges (proportional allocation by in-scope energy share)
+if st.session_state.get("abs_segments", []):
+    st.markdown(f"**Badges show applied $ for {badge_year} (after pooling/banking & multipliers), allocated by In-scope energy share.**")
+    for i in range(len(per_segment_titles)):
+        seg_scope = per_segment_scope_totals[i]
+        if E_scope_MJ > 0 and seg_scope > 0:
+            share = seg_scope / E_scope_MJ
+            if applied_penalty_usd_year > 0:
+                text = f"Penalty ${us2(share * applied_penalty_usd_year)}"
+            elif applied_credit_usd_year > 0:
+                text = f"Credit ${us2(share * applied_credit_usd_year)}"
+            else:
+                text = "No charge $0.00"
+        else:
+            text = None
+        _stack_with_arrows_and_badge(
+            per_segment_titles[i],
+            per_segment_left_vals[i],
+            per_segment_right_vals[i],
+            per_segment_show_elec[i],
+            text
+        )
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Combined energy (All segments) — stacks with $ badge
+# ──────────────────────────────────────────────────────────────────────────────
+st.markdown("### Combined energy (All segments)")
+categories = ["All energy", "In-scope energy"]
+fuels_sorted_global = sorted(FUELS, key=lambda f: wtw.get(f, float("inf")))
+stack_layers_global = [("ELEC", "ELEC (OPS)")] + [(f, f) for f in fuels_sorted_global]
+
+left_vals = {
+    "ELEC":  combined_all.get("ELEC", 0.0),
+    "RFNBO": combined_all.get("RFNBO", 0.0),
+    "BIO":   combined_all.get("BIO",   0.0),
+    "HSFO":  combined_all.get("HSFO",  0.0),
+    "LFO":   combined_all.get("LFO",   0.0),
+    "MGO":   combined_all.get("MGO",   0.0),
+}
+right_vals = {
+    "ELEC":  combined_scope.get("ELEC",  0.0),
+    "RFNBO": combined_scope.get("RFNBO", 0.0),
+    "BIO":   combined_scope.get("BIO",   0.0),
+    "HSFO":  combined_scope.get("HSFO",  0.0),
+    "LFO":   combined_scope.get("LFO",   0.0),
+    "MGO":   combined_scope.get("MGO",   0.0),
+}
+
+# Combined stack with $ badge text for selected year
+_stack_with_arrows_and_badge(
+    "All segments (combined)",
+    left_vals,
+    right_vals,
+    show_elec=True,
+    badge_text=applied_label_total
+)
+st.caption("Combined right bar = sum of per-segment in-scope energies (with cross-border prioritized allocation toggle as selected; OPS from EU-berth only).")
+
+# ──────────────────────────────────────────────────────────────────────────────
+# GHG Intensity vs. FuelEU Limit (uses combined in-scope)
+# ──────────────────────────────────────────────────────────────────────────────
+st.markdown('### GHG Intensity vs FuelEU Limit (2025–2050)')
+years = LIMITS_DF["Year"].tolist()
+limit_series = LIMITS_DF["Limit_gCO2e_per_MJ"].tolist()
+actual_series = [attained_intensity_for_year(y) for y in years]
+step_years = [2025, 2030, 2035, 2040, 2045, 2050]
+limit_text = [f"{limit_series[i]:,.2f}" if years[i] in step_years else "" for i in range(len(years))]
+attained_text = [f"{actual_series[i]:,.2f}" if years[i] in step_years else "" for i in range(len(years))]
+
+fig = go.Figure()
+fig.add_trace(go.Scatter(x=years, y=limit_series, name="FuelEU Limit (step)",
+                         mode="lines+markers+text", line=dict(shape="hv", width=3),
+                         text=limit_text, textposition="bottom center", textfont=dict(size=12),
+                         hovertemplate="Year=%{x}<br>Limit=%{y:,.2f} gCO₂e/MJ<extra></extra>"))
+fig.add_trace(go.Scatter(x=years, y=actual_series, name="Attained GHG (combined in-scope)",
+                         mode="lines+text", line=dict(dash="dash", width=3),
+                         text=attained_text, textposition="top center", textfont=dict(size=12),
+                         hovertemplate="Year=%{x}<br>Attained=%{y:,.2f} gCO₂e/MJ<extra></extra>"))
+fig.update_yaxes(tickformat=",.2f")
+fig.update_layout(xaxis_title="Year", yaxis_title="GHG Intensity [gCO₂e/MJ]",
+                  hovermode="x unified",
+                  legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1.0),
+                  margin=dict(l=40, r=20, t=50, b=40))
+st.plotly_chart(fig, use_container_width=True)
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Results — Banking/Pooling + optimizer (kept), using combined in-scope intensity
+# ──────────────────────────────────────────────────────────────────────────────
+st.header("Results (merged per-year table)")
+
+# Optimizer utilities (kept as in prior version; pooled allocator approximation for candidate mixes)
 HSFO_voy_t = totals_mass["intra_voy"]["HSFO"] + totals_mass["extra_voy"]["HSFO"]
 LFO_voy_t  = totals_mass["intra_voy"]["LFO"]  + totals_mass["extra_voy"]["LFO"]
 MGO_voy_t  = totals_mass["intra_voy"]["MGO"]  + totals_mass["extra_voy"]["MGO"]
