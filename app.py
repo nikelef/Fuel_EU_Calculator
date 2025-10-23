@@ -1,10 +1,13 @@
-# app.py — FuelEU Maritime Calculator (ABS segments only, tidy sidebar)
-# Keeps your allocator/optimizer/pooling/banking logic. OPS is a single global input (kWh→MJ).
+# app.py — FuelEU Maritime Calculator (ABS segments, pooled final, tidy sidebar)
+# Key changes:
+#   • Attained GHG uses the pooled global mix of ALL segments (not first-only).
+#   • OPS electricity lives only in EU at-berth segments (kWh→MJ, 100% in-scope).
+#   • Per-segment stacks: arrows (All→In-scope), % retained, ascending WtW, original colors, MJ hover.
+#   • Final combined stack (all segments), in-scope via pool priority.
+#   • Sidebar formatting tightened; top metrics smaller text.
 
 from __future__ import annotations
-
-import json
-import os
+import json, os
 from typing import Dict, Any, Tuple, List
 
 import numpy as np
@@ -55,7 +58,6 @@ def _load_defaults() -> Dict[str, Any]:
         except Exception:
             return {}
     return {}
-
 def _get(d: Dict[str, Any], key: str, fallback):
     return d.get(key, fallback)
 
@@ -70,10 +72,6 @@ def compute_energy_MJ(mass_t: float, lcv_MJ_per_t: float) -> float:
     return mass_t * lcv
 
 def euros_from_tco2e(balance_tco2e_positive: float, g_attained: float, price_eur_per_vlsfo_t: float) -> float:
-    """
-    Convert a *positive* tCO2e quantity to euros using the year's attained GHG.
-    tCO2e per VLSFO-eq ton = (g_attained [g/MJ] * 41,000 [MJ/t]) / 1e6.
-    """
     if balance_tco2e_positive <= 0 or price_eur_per_vlsfo_t <= 0 or g_attained <= 0:
         return 0.0
     tco2e_per_vlsfot = (g_attained * 41_000.0) / 1_000_000.0
@@ -87,20 +85,17 @@ def us2(x: float) -> str:
         return f"{float(x):,.2f}"
     except Exception:
         return x
-
 def parse_us(s: str, default: float = 0.0, min_value: float = 0.0) -> float:
     try:
         val = float(str(s).replace(",", ""))
     except Exception:
         val = float(default)
     return max(val, min_value)
-
 def parse_us_any(s: str, default: float = 0.0) -> float:
     try:
         return float(str(s).replace(",", ""))
     except Exception:
         return float(default)
-
 def float_text_input(label: str, default_val: float, key: str, min_value: float = 0.0, label_visibility: str = "visible") -> float:
     if key not in st.session_state:
         st.session_state[key] = us2(default_val)
@@ -109,7 +104,6 @@ def float_text_input(label: str, default_val: float, key: str, min_value: float 
         st.session_state[key] = us2(val)
     st.text_input(label, value=st.session_state[key], key=key, on_change=_normalize, label_visibility=label_visibility)
     return parse_us(st.session_state[key], default=default_val, min_value=min_value)
-
 def float_text_input_signed(label: str, default_val: float, key: str) -> float:
     if key not in st.session_state:
         st.session_state[key] = us2(default_val)
@@ -120,22 +114,15 @@ def float_text_input_signed(label: str, default_val: float, key: str) -> float:
     return parse_us_any(st.session_state[key], default=default_val)
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Allocator (Extra-EU pool priority, unchanged)
+# Allocator (Extra-EU pool priority with berth-100% guarantee; ELEC always 100%)
 # ──────────────────────────────────────────────────────────────────────────────
 def scoped_energies_extra_eu(energies_fuel_voyage: Dict[str, float],
                              energies_fuel_berth: Dict[str, float],
                              elec_MJ: float,
                              wtw: Dict[str, float]) -> Dict[str, float]:
-    """
-    Extra-EU (requested variant, berth-100% guarantee):
-      • Build pool: ELEC (100%) + at-berth fuels (100%) + 50% of *total* voyage fuels.
-      • Fill by WtW priority (renewables first, then at-berth fossils, then 50% voyage fossils).
-    """
     def g(d, k): return float(d.get(k, 0.0))
-
     fossils = ["HSFO", "LFO", "MGO"]
     foss_sorted = sorted(fossils, key=lambda f: wtw.get(f, float("inf")))
-
     total_voy = sum(energies_fuel_voyage.values())
     half_voy  = 0.5 * total_voy
     berth_fossil_total = sum(g(energies_fuel_berth, f) for f in fossils)
@@ -143,52 +130,44 @@ def scoped_energies_extra_eu(energies_fuel_voyage: Dict[str, float],
 
     scoped = {k: 0.0 for k in ["HSFO","LFO","MGO","BIO","RFNBO","ELEC"]}
     scoped["ELEC"] = max(elec_MJ, 0.0)
-
     remaining = pool_total  # fuels only
 
-    # 1) Renewables: at-berth first, then voyage up to spare after reserving berth fossils
     ren_sorted = sorted(["RFNBO","BIO"], key=lambda f: wtw.get(f, float("inf")))
+    # Renewables — at-berth first
     for f in ren_sorted:
         take_b = min(g(energies_fuel_berth, f), remaining)
-        if take_b > 0:
-            scoped[f] += take_b; remaining -= take_b
+        if take_b > 0: scoped[f] += take_b; remaining -= take_b
         if remaining <= 0: return scoped
-
         spare_for_voy_ren = max(0.0, remaining - berth_fossil_total)
         take_v = min(g(energies_fuel_voyage, f), spare_for_voy_ren)
-        if take_v > 0:
-            scoped[f] += take_v; remaining -= take_v
+        if take_v > 0: scoped[f] += take_v; remaining -= take_v
         if remaining <= 0: return scoped
-
-    # 2) Fossil at-berth — 100% in ascending WtW
+    # Fossil at-berth — 100%
     for f in foss_sorted:
         take = min(g(energies_fuel_berth, f), remaining)
-        if take > 0:
-            scoped[f] += take; remaining -= take
+        if take > 0: scoped[f] += take; remaining -= take
         if remaining <= 0: return scoped
-
-    # 3) Fossil voyage — 50% per fuel in ascending WtW
+    # Fossil voyage — 50%
     for f in foss_sorted:
         half_v = 0.5 * g(energies_fuel_voyage, f)
         if half_v <= 0 or remaining <= 0: continue
         take = min(half_v, remaining)
         scoped[f] += take; remaining -= take
         if remaining <= 0: return scoped
-
     return scoped
 
 # ──────────────────────────────────────────────────────────────────────────────
 # ABS-style segments
 # ──────────────────────────────────────────────────────────────────────────────
 SEG_TYPES = [
-    "Intra-EU voyage",        # 100% scope
-    "EU→non-EU voyage",       # Extra-EU (50% voyage scope in pool)
-    "non-EU→EU voyage",       # Extra-EU (50% voyage scope in pool)
-    "EU at-berth (port stay)" # 100% scope + contributes to pool
+    "Intra-EU voyage",
+    "EU→non-EU voyage",
+    "non-EU→EU voyage",
+    "EU at-berth (port stay)"
 ]
 
 def _default_segment() -> Dict[str, Any]:
-    return {"type": SEG_TYPES[0], "HSFO_t": 0.0, "LFO_t": 0.0, "MGO_t": 0.0, "BIO_t": 0.0, "RFNBO_t": 0.0}
+    return {"type": SEG_TYPES[0], "HSFO_t": 0.0, "LFO_t": 0.0, "MGO_t": 0.0, "BIO_t": 0.0, "RFNBO_t": 0.0, "OPS_kWh": 0.0}
 
 def _ensure_segments_state():
     if "abs_segments" not in st.session_state:
@@ -197,18 +176,21 @@ def _ensure_segments_state():
         else:
             st.session_state["abs_segments"] = []
 
-def _segments_totals_masses() -> Dict[str, Dict[str, float]]:
+def _segments_totals_masses_and_ops() -> Tuple[Dict[str, Dict[str, float]], float]:
     res = {
         "intra_voy": {k: 0.0 for k in ["HSFO","LFO","MGO","BIO","RFNBO"]},
         "extra_voy": {k: 0.0 for k in ["HSFO","LFO","MGO","BIO","RFNBO"]},
         "eu_berth":  {k: 0.0 for k in ["HSFO","LFO","MGO","BIO","RFNBO"]},
     }
+    ops_kwh_total = 0.0
     for seg in st.session_state.get("abs_segments", []):
         t = seg.get("type", SEG_TYPES[0])
         bucket = "intra_voy" if t == "Intra-EU voyage" else ("eu_berth" if t == "EU at-berth (port stay)" else "extra_voy")
         for f in ["HSFO","LFO","MGO","BIO","RFNBO"]:
             res[bucket][f] += float(seg.get(f + "_t", 0.0)) or 0.0
-    return res
+        if t == "EU at-berth (port stay)":
+            ops_kwh_total += float(seg.get("OPS_kWh", 0.0)) or 0.0
+    return res, ops_kwh_total
 
 def _masses_to_energies(masses: Dict[str, float], LCVs: Dict[str, float]) -> Dict[str, float]:
     return {f: compute_energy_MJ(masses.get(f, 0.0), LCVs.get(f, 0.0)) for f in ["HSFO","LFO","MGO","BIO","RFNBO"]}
@@ -220,19 +202,19 @@ st.set_page_config(page_title="FuelEU Maritime — ABS Segments", layout="wide")
 st.title("FuelEU Maritime — ABS Segments — GHG Intensity & Cost")
 st.caption("2025–2050 • Limits from 2020 baseline 91.16 gCO₂e/MJ • WtW • Prices in EUR")
 
-# Sidebar layout — compact “cards”, clear order, no colors
+# Sidebar CSS (compact), top metric smaller value text
 st.markdown("""
 <style>
-/* Compact, consistent sidebar spacing */
 section[data-testid="stSidebar"] div.block-container{ padding-top:.6rem; padding-bottom:.6rem; }
 section[data-testid="stSidebar"] [data-testid="stVerticalBlock"]{ gap:.6rem; }
 section[data-testid="stSidebar"] label{ font-size:.95rem; margin-bottom:.2rem; font-weight:600; }
-section[data-testid="stSidebar"] input[type="text"],
-section[data-testid="stSidebar"] input[type="number"]{ height:2.0rem; min-height:2.0rem; padding:.32rem .55rem; }
+section[data-testid="stSidebar"] input[type="text"], section[data-testid="stSidebar"] input[type="number"]{ height:2.0rem; min-height:2.0rem; padding:.32rem .55rem; }
 .card{ padding:.65rem .75rem; border:1px solid #e5e7eb; border-radius:.6rem; background:#fbfbfb; }
 .card h4{ margin:.15rem 0 .4rem 0; font-size:1.0rem; font-weight:800; }
 .card .help{ font-size:.86rem; color:#6b7280; margin-top:.1rem; }
 hr{ border:none; border-top:1px solid #e5e7eb; margin:.4rem 0; }
+[data-testid="stMetricLabel"] { font-size: .95rem !important; font-weight: 800 !important; }
+[data-testid="stMetricValue"] { font-size: .80rem !important; font-weight: 700 !important; line-height: 1.05 !important; }
 [data-testid="stDataFrame"] div[role="columnheader"],[data-testid="stDataFrame"] div[role="gridcell"]{ padding:2px 6px !important; }
 [data-testid="stDataFrame"] { font-size: 0.85rem !important; }
 </style>
@@ -242,7 +224,7 @@ with st.sidebar:
     _ensure_segments_state()
 
     # 1) Segments builder
-    st.markdown('<div class="card"><h4>ABS segments</h4><div class="help">Add voyages and EU at-berth stays one by one. All results aggregate below.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="card"><h4>ABS segments</h4><div class="help">Add voyages and EU at-berth stays one by one. OPS appears only inside EU at-berth.</div>', unsafe_allow_html=True)
     col_add, col_clear = st.columns([1,1])
     with col_add:
         if st.button("➕ Add segment"):
@@ -263,6 +245,10 @@ with st.sidebar:
             with cB:
                 seg["LFO_t"]   = float_text_input("LFO [t]"  , seg.get("LFO_t",  0.0), key=f"seg_lfo_{i}",   min_value=0.0)
                 seg["BIO_t"]   = float_text_input("BIO [t]"  , seg.get("BIO_t",  0.0), key=f"seg_bio_{i}",   min_value=0.0)
+            # OPS appears only for EU at-berth
+            if seg["type"] == "EU at-berth (port stay)":
+                seg["OPS_kWh"] = float_text_input("EU OPS electricity (kWh)", seg.get("OPS_kWh", 0.0), key=f"seg_ops_{i}", min_value=0.0)
+                st.text_input("Electricity (MJ) (derived)", value=us2(seg["OPS_kWh"]*3.6), disabled=True)
             if st.button("Remove this segment", key=f"seg_remove_{i}"):
                 to_remove.append(i)
     if to_remove:
@@ -284,24 +270,15 @@ with st.sidebar:
         WtW_RFNBO= float_text_input("RFNBO WtW [g/MJ]",_get(DEFAULTS, "WtW_RFNBO",20.00),    key="WtW_RFNBO",min_value=0.0)
     st.markdown("</div>", unsafe_allow_html=True)
 
-    # 3) OPS (global)
-    st.markdown('<div class="card"><h4>EU OPS electricity</h4>', unsafe_allow_html=True)
-    OPS_kWh = float_text_input("Electricity delivered (kWh)", _get(DEFAULTS, "OPS_kWh", 0.0), key="OPS_kWh", min_value=0.0)
-    OPS_MJ  = OPS_kWh * 3.6
-    st.text_input("Electricity delivered (MJ) (derived)", value=us2(OPS_MJ), disabled=True)
-    st.markdown("</div>", unsafe_allow_html=True)
-
-    # 4) Market prices (derived values use *live* factor from current mix — not zero anymore)
+    # 3) Market prices
     st.markdown('<div class="card"><h4>Market prices</h4>', unsafe_allow_html=True)
     eur_usd_fx = float_text_input("1 Euro = … USD", _get(DEFAULTS, "eur_usd_fx", 1.00), key="eur_usd_fx", min_value=0.0)
     credit_per_tco2e = float_text_input("Credit price €/tCO₂e", _get(DEFAULTS, "credit_per_tco2e", 200.0), key="credit_per_tco2e_str", min_value=0.0)
     penalty_price_eur_per_vlsfo_t = float_text_input("Penalty price €/VLSFO-eq t", _get(DEFAULTS, "penalty_price_eur_per_vlsfo_t", 2_400.0), key="penalty_per_vlsfo_t_str", min_value=0.0)
     bio_premium_usd_per_t = float_text_input("Premium BIO vs HSFO [USD/ton]", _get(DEFAULTS, "bio_premium_usd_per_t", 0.0), key="bio_premium_usd_per_t", min_value=0.0)
-    st.markdown('<div class="help">Derived below are computed from the current mix (with RFNBO ×2 reward through 2033).</div>', unsafe_allow_html=True)
-    # (Derived fields filled after we compute the factor — see below.)
     st.markdown("</div>", unsafe_allow_html=True)
 
-    # 5) Other + Optimizer
+    # 4) Other + Optimizer
     st.markdown('<div class="card"><h4>Other settings</h4>', unsafe_allow_html=True)
     consecutive_deficit_years_seed = int(st.number_input("Consecutive deficit years (seed)", min_value=1, value=int(_get(DEFAULTS, "consecutive_deficit_years", 1)), step=1))
     opt_fuels = ["HSFO", "LFO", "MGO"]
@@ -312,7 +289,7 @@ with st.sidebar:
     selected_fuel_for_opt = st.selectbox("Fuel to reduce (for optimization)", opt_fuels, index=_idx)
     st.markdown("</div>", unsafe_allow_html=True)
 
-    # 6) Banking & Pooling
+    # 5) Banking & Pooling
     st.markdown('<div class="card"><h4>Banking & Pooling (tCO₂e)</h4>', unsafe_allow_html=True)
     pooling_price_eur_per_tco2e = float_text_input("Pooling price €/tCO₂e", _get(DEFAULTS, "pooling_price_eur_per_tco2e", 200.0), key="pooling_price_eur_per_tco2e", min_value=0.0)
     pooling_tco2e_input = float_text_input_signed("Pooling [tCO₂e]: + uptake, − provide", _get(DEFAULTS, "pooling_tco2e", 0.0), key="POOL_T")
@@ -321,12 +298,11 @@ with st.sidebar:
     banking_start_year = st.selectbox("Banking starts from year", YEARS, index=YEARS.index(int(_get(DEFAULTS, "banking_start_year", YEARS[0]))))
     st.markdown("</div>", unsafe_allow_html=True)
 
-    # 7) Save
+    # 6) Save
     if st.button("💾 Save current inputs as defaults"):
         defaults_to_save = {
             "eur_usd_fx": eur_usd_fx,
             "bio_premium_usd_per_t": bio_premium_usd_per_t,
-            "OPS_kWh": OPS_kWh,
             "LCV_HSFO": LCV_HSFO, "LCV_LFO": LCV_LFO, "LCV_MGO": LCV_MGO, "LCV_BIO": LCV_BIO, "LCV_RFNBO": LCV_RFNBO,
             "WtW_HSFO": WtW_HSFO, "WtW_LFO": WtW_LFO, "WtW_MGO": WtW_MGO, "WtW_BIO": WtW_BIO, "WtW_RFNBO": WtW_RFNBO,
             "credit_per_tco2e": credit_per_tco2e,
@@ -348,58 +324,44 @@ with st.sidebar:
             st.error(f"Could not save defaults: {e}")
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Aggregation (ABS → totals) and attained GHG (global, correct)
+# Aggregation (ALL segments) and attained GHG (global, pooled)
 # ──────────────────────────────────────────────────────────────────────────────
-# Mass totals
-totals_mass = _segments_totals_masses()
-
-# Publish voyage/berth split for downstream logic
-HSFO_voy_t = totals_mass["intra_voy"]["HSFO"] + totals_mass["extra_voy"]["HSFO"]
-LFO_voy_t  = totals_mass["intra_voy"]["LFO"]  + totals_mass["extra_voy"]["LFO"]
-MGO_voy_t  = totals_mass["intra_voy"]["MGO"]  + totals_mass["extra_voy"]["MGO"]
-BIO_voy_t  = totals_mass["intra_voy"]["BIO"]  + totals_mass["extra_voy"]["BIO"]
-RFNBO_voy_t= totals_mass["intra_voy"]["RFNBO"]+ totals_mass["extra_voy"]["RFNBO"]
-HSFO_berth_t = totals_mass["eu_berth"]["HSFO"]
-LFO_berth_t  = totals_mass["eu_berth"]["LFO"]
-MGO_berth_t  = totals_mass["eu_berth"]["MGO"]
-BIO_berth_t  = totals_mass["eu_berth"]["BIO"]
-RFNBO_berth_t= totals_mass["eu_berth"]["RFNBO"]
-
-# LCVs/WtWs (live values)
+# Live LCVs / WtW
 LCV_HSFO = parse_us_any(st.session_state.get("LCV_HSFO", _get(DEFAULTS,"LCV_HSFO",40200.0)), 40200.0)
 LCV_LFO  = parse_us_any(st.session_state.get("LCV_LFO" , _get(DEFAULTS,"LCV_LFO" ,42700.0)), 42700.0)
 LCV_MGO  = parse_us_any(st.session_state.get("LCV_MGO" , _get(DEFAULTS,"LCV_MGO" ,42700.0)), 42700.0)
 LCV_BIO  = parse_us_any(st.session_state.get("LCV_BIO" , _get(DEFAULTS,"LCV_BIO" ,38000.0)), 38000.0)
 LCV_RFNBO= parse_us_any(st.session_state.get("LCV_RFNBO", _get(DEFAULTS,"LCV_RFNBO",30000.0)),30000.0)
-
 WtW_HSFO = parse_us_any(st.session_state.get("WtW_HSFO", _get(DEFAULTS,"WtW_HSFO",92.78)), 92.78)
 WtW_LFO  = parse_us_any(st.session_state.get("WtW_LFO" , _get(DEFAULTS,"WtW_LFO" ,92.00)), 92.00)
 WtW_MGO  = parse_us_any(st.session_state.get("WtW_MGO" , _get(DEFAULTS,"WtW_MGO" ,93.93)), 93.93)
 WtW_BIO  = parse_us_any(st.session_state.get("WtW_BIO" , _get(DEFAULTS,"WtW_BIO" ,70.00)), 70.00)
 WtW_RFNBO= parse_us_any(st.session_state.get("WtW_RFNBO", _get(DEFAULTS,"WtW_RFNBO",20.00)), 20.00)
-
 wtw = {"HSFO": WtW_HSFO, "LFO": WtW_LFO, "MGO": WtW_MGO, "BIO": WtW_BIO, "RFNBO": WtW_RFNBO, "ELEC": 0.0}
 LCVs_now = {"HSFO": LCV_HSFO, "LFO": LCV_LFO, "MGO": LCV_MGO, "BIO": LCV_BIO, "RFNBO": LCV_RFNBO}
 
-# Energies by area
+# Sum masses & OPS **across ALL segments**
+totals_mass, ops_kwh_total = _segments_totals_masses_and_ops()
+ELEC_MJ = ops_kwh_total * 3.6
+
 energies_extra_voy = _masses_to_energies(totals_mass["extra_voy"], LCVs_now)
 energies_eu_berth  = _masses_to_energies(totals_mass["eu_berth"],  LCVs_now)
 energies_intra_voy = _masses_to_energies(totals_mass["intra_voy"], LCVs_now)
 
-# Global in-scope (allocator across *all* extra voyages + EU berth) + add 100% intra
-scoped_extra = scoped_energies_extra_eu(energies_extra_voy, energies_eu_berth, OPS_MJ, wtw)
+# Global, pooled in-scope (pool on all extra + all EU-berth with ELEC; add 100% intra)
+scoped_extra = scoped_energies_extra_eu(energies_extra_voy, energies_eu_berth, ELEC_MJ, wtw)
 scoped_energies = dict(scoped_extra)
 for f in ["HSFO","LFO","MGO","BIO","RFNBO"]:
     scoped_energies[f] = scoped_energies.get(f,0.0) + energies_intra_voy.get(f,0.0)
 
 energies_fuel_full = {f: energies_extra_voy.get(f,0.0) + energies_eu_berth.get(f,0.0) + energies_intra_voy.get(f,0.0)
                       for f in ["HSFO","LFO","MGO","BIO","RFNBO"]}
-energies_full = {**energies_fuel_full, "ELEC": OPS_MJ}
+energies_full = {**energies_fuel_full, "ELEC": ELEC_MJ}
 
 E_total_MJ = sum(energies_full.values())
 E_scope_MJ = sum(scoped_energies.values())
 
-# Attained GHG of final mix (global, correct)
+# Attained GHG of global pooled final mix — used everywhere below
 num_phys = sum(scoped_energies.get(k,0.0) * wtw.get(k,0.0) for k in wtw.keys())
 den_phys = E_scope_MJ
 g_base = (num_phys / den_phys) if den_phys > 0 else 0.0
@@ -411,28 +373,25 @@ def attained_intensity_for_year(y: int) -> float:
     den_rwd = den_phys + (r - 1.0) * E_rfnbo_scope
     return num_phys / den_rwd if den_rwd > 0 else 0.0
 
-# Live factor for price linking (not zero anymore).
-# Use r=2 (preview effect through 2033) to match early-years credit/penalty conversion shown in UI.
+# Derived price factor (never zero): use preview r=2; fallback to baseline if empty
 if den_phys > 0:
-    den_preview = den_phys + E_rfnbo_scope  # r=2
+    den_preview = den_phys + E_rfnbo_scope
     g_preview = num_phys / den_preview if den_preview > 0 else 0.0
 else:
     g_preview = 0.0
-
 if g_preview <= 0:
-    # Fallback to baseline intensity if no energy yet (prevents zeros in derived prices)
     g_preview = BASELINE_2020_GFI
+tco2e_per_vlsfo_t = (g_preview * 41_000.0) / 1_000_000.0
 
-tco2e_per_vlsfo_t = (g_preview * 41_000.0) / 1_000_000.0  # > 0 by construction now
-# Update the *visible* derived fields in the already-rendered sidebar card
+# Show derived prices neatly under Market prices (separate small card)
 with st.sidebar:
-    st.markdown('<div class="card">', unsafe_allow_html=True)
+    st.markdown('<div class="card"><h4>Derived prices</h4>', unsafe_allow_html=True)
     st.text_input("Credit price €/VLSFO-eq t (derived)", value=us2(credit_per_tco2e * tco2e_per_vlsfo_t), disabled=True)
     st.text_input("Penalty price €/tCO₂e (derived)", value=us2((penalty_price_eur_per_vlsfo_t / tco2e_per_vlsfo_t) if tco2e_per_vlsfo_t>0 else 0.0), disabled=True)
     st.markdown("</div>", unsafe_allow_html=True)
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Headline metrics
+# Headline metrics (smaller numbers)
 # ──────────────────────────────────────────────────────────────────────────────
 st.subheader("Energy breakdown (MJ)")
 cA, cB, cC, cD, cE, cF, cG, cH = st.columns(8)
@@ -446,8 +405,17 @@ with cG: st.metric("BIO — in scope", f"{us2(scoped_energies.get('BIO',0))} MJ"
 with cH: st.metric("RFNBO — in scope", f"{us2(scoped_energies.get('RFNBO',0))} MJ")
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Per-segment compact stacks (All vs In-scope), with USD cost
+# Per-segment stacks (All vs In-scope) WITH arrows & % (WtW ascending; colors)
 # ──────────────────────────────────────────────────────────────────────────────
+COLORS = {  # original palette
+    "ELEC":  "#FACC15",
+    "RFNBO": "#86EFAC",
+    "BIO":   "#065F46",
+    "MGO":   "#93C5FD",
+    "LFO":   "#2563EB",
+    "HSFO":  "#1E3A8A",
+}
+
 def _segment_energy_mj(seg: Dict[str, Any]) -> Dict[str,float]:
     return {
         "HSFO": compute_energy_MJ(seg.get("HSFO_t",0.0), LCV_HSFO),
@@ -457,45 +425,201 @@ def _segment_energy_mj(seg: Dict[str, Any]) -> Dict[str,float]:
         "RFNBO":compute_energy_MJ(seg.get("RFNBO_t",0.0), LCV_RFNBO),
     }
 
-def _segment_scope_mj(seg: Dict[str,Any], energies_all: Dict[str,float]) -> Dict[str,float]:
+def _segment_scope_simple(seg: Dict[str,Any], energies_all: Dict[str,float]) -> Tuple[Dict[str,float], float]:
     t = seg.get("type", SEG_TYPES[0])
-    if t == "Intra-EU voyage" or t == "EU at-berth (port stay)":
-        return dict(energies_all)  # 100%
-    else:
-        # Cross-border voyage — simple 50% view for per-segment chart (global pool still governs compliance)
-        return {k: 0.5*energies_all[k] for k in energies_all.keys()}
+    if t == "Intra-EU voyage":
+        return dict(energies_all), 0.0
+    if t == "EU at-berth (port stay)":
+        return dict(energies_all), float(seg.get("OPS_kWh",0.0))*3.6
+    # Cross-border voyage ⇒ 50% simple scope (per ABS-style per-segment view)
+    return {k: 0.5*energies_all[k] for k in energies_all.keys()}, 0.0
 
-def _mini_stack(title: str, energies_all: Dict[str,float], energies_scope: Dict[str,float], extra_note: str = ""):
-    cats = ["All", "In-scope"]
-    fuels = ["RFNBO","BIO","HSFO","LFO","MGO"]
+def _stack_with_arrows(title: str, left_vals: Dict[str,float], right_vals: Dict[str,float], show_elec: bool):
+    categories = ["All", "In-scope"]
+    fuels_sorted = sorted(["RFNBO","BIO","HSFO","LFO","MGO"], key=lambda f: wtw.get(f, float("inf")))
+    stack_layers = ([("ELEC","ELEC (OPS)")] if show_elec else []) + [(f, f) for f in fuels_sorted]
+
     fig = go.Figure()
-    for f in fuels:
-        fig.add_trace(go.Bar(x=cats, y=[energies_all.get(f,0.0), energies_scope.get(f,0.0)], name=f))
-    fig.update_layout(barmode="stack", height=240, margin=dict(l=30,r=10,t=40,b=30),
-                      legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1.0),
-                      title=dict(text=title, x=0.02, y=0.95, font=dict(size=13)))
-    st.plotly_chart(fig, use_container_width=True)
-    if extra_note:
-        st.caption(extra_note)
+    for key, label in stack_layers:
+        fig.add_trace(
+            go.Bar(
+                x=categories,
+                y=[left_vals.get(key, 0.0), right_vals.get(key, 0.0)],
+                name=label,
+                marker_color=COLORS.get(key, None),
+                hovertemplate=f"{label}<br>%{{x}}<br>%{{y:,.2f}} MJ<extra></extra>",
+            )
+        )
+    total_all = sum(left_vals.get(k,0.0) for k,_ in stack_layers)
+    total_scope = sum(right_vals.get(k,0.0) for k,_ in stack_layers)
+    fig.add_annotation(x=categories[0], y=total_all,  text=f"{us2(total_all)} MJ", showarrow=False, yshift=10, font=dict(size=12))
+    fig.add_annotation(x=categories[1], y=total_scope, text=f"{us2(total_scope)} MJ", showarrow=False, yshift=10, font=dict(size=12))
 
-# Compute 2025 net compliance cost (excluding BIO premium) to apportion as “indicative share”
+    # arrows + % retained
+    cum_left = 0.0
+    cum_right = 0.0
+    for key, label in stack_layers:
+        layer_left = float(left_vals.get(key, 0.0))
+        layer_right = float(right_vals.get(key, 0.0))
+        if layer_left <= 0.0 and layer_right <= 0.0:
+            cum_left += layer_left; cum_right += layer_right
+            continue
+        y_center_left = cum_left + (layer_left / 2.0)
+        y_center_right = cum_right + (layer_right / 2.0)
+        fig.add_trace(go.Scatter(x=categories, y=[y_center_left, y_center_right], mode="lines",
+                                 line=dict(dash="dot", width=2), hoverinfo="skip", showlegend=False))
+        fig.add_annotation(x=categories[1], y=y_center_right, ax=categories[0], ay=y_center_left,
+                           xref="x", yref="y", axref="x", ayref="y", text="", showarrow=True,
+                           arrowhead=3, arrowsize=1.2, arrowwidth=2, arrowcolor="rgba(0,0,0,0.65)")
+        pct = (layer_right / layer_left * 100.0) if layer_left > 0 else 100.0
+        pct = max(min(pct, 100.0), 0.0)
+        y_mid = 0.5 * (y_center_left + y_center_right)
+        fig.add_annotation(xref="paper", yref="y", x=0.5, y=y_mid, text=f"{pct:.0f}%", showarrow=False,
+                           font=dict(size=11, color="#374151"),
+                           bgcolor="rgba(255,255,255,0.65)", bordercolor="rgba(0,0,0,0)", borderpad=1)
+        cum_left += layer_left; cum_right += layer_right
+
+    fig.update_layout(
+        title=dict(text=title, x=0.02, y=0.95, font=dict(size=13)),
+        barmode="stack", xaxis_title="", yaxis_title="Energy [MJ]", hovermode="x unified",
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1.0),
+        margin=dict(l=40, r=20, t=50, b=20), bargap=0.35, height=260,
+    )
+    st.plotly_chart(fig, use_container_width=True)
+
+st.markdown("### Per-segment energy (All vs In-scope)")
+if not st.session_state["abs_segments"]:
+    st.info("No segments yet. Add segments from the left sidebar.")
+else:
+    for i, seg in enumerate(st.session_state["abs_segments"]):
+        energies_all = _segment_energy_mj(seg)
+        energies_scope, elec_mj_seg = _segment_scope_simple(seg, energies_all)
+        left_vals = dict(energies_all)
+        right_vals = dict(energies_scope)
+        if seg["type"] == "EU at-berth (port stay)":
+            left_vals["ELEC"] = elec_mj_seg
+            right_vals["ELEC"] = elec_mj_seg
+            show_elec = True
+        else:
+            show_elec = False
+        _stack_with_arrows(f"Segment {i+1}: {seg.get('type','')}", left_vals, right_vals, show_elec)
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Final combined stack (ALL segments pooled) — arrows, % retained
+# ──────────────────────────────────────────────────────────────────────────────
+st.markdown("### Combined energy (All segments)")
+categories = ["All energy", "In-scope energy"]
+fuels_sorted_global = sorted(["RFNBO","BIO","HSFO","LFO","MGO"], key=lambda f: wtw.get(f, float("inf")))
+stack_layers_global = [("ELEC", "ELEC (OPS)")] + [(f, f) for f in fuels_sorted_global]
+
+left_vals = {
+    "ELEC":  ELEC_MJ,
+    "RFNBO": energies_fuel_full.get("RFNBO", 0.0),
+    "BIO":   energies_fuel_full.get("BIO",   0.0),
+    "HSFO":  energies_fuel_full.get("HSFO",  0.0),
+    "LFO":   energies_fuel_full.get("LFO",   0.0),
+    "MGO":   energies_fuel_full.get("MGO",   0.0),
+}
+right_vals = {
+    "ELEC":  scoped_energies.get("ELEC",  0.0),
+    "RFNBO": scoped_energies.get("RFNBO", 0.0),
+    "BIO":   scoped_energies.get("BIO",   0.0),
+    "HSFO":  scoped_energies.get("HSFO",  0.0),
+    "LFO":   scoped_energies.get("LFO",   0.0),
+    "MGO":   scoped_energies.get("MGO",   0.0),
+}
+
+fig_stacks = go.Figure()
+for key, label in stack_layers_global:
+    fig_stacks.add_trace(
+        go.Bar(
+            x=categories,
+            y=[left_vals.get(key, 0.0), right_vals.get(key, 0.0)],
+            name=label,
+            marker_color=COLORS.get(key, None),
+            hovertemplate=f"{label}<br>%{{x}}<br>%{{y:,.2f}} MJ<extra></extra>",
+        )
+    )
+total_all = sum(left_vals.values())
+total_scope = sum(right_vals.values())
+fig_stacks.add_annotation(x=categories[0], y=total_all,  text=f"{us2(total_all)} MJ",  showarrow=False, yshift=10, font=dict(size=12))
+fig_stacks.add_annotation(x=categories[1], y=total_scope, text=f"{us2(total_scope)} MJ", showarrow=False, yshift=10, font=dict(size=12))
+
+cum_left = 0.0
+cum_right = 0.0
+for key, label in stack_layers_global:
+    layer_left = float(left_vals.get(key, 0.0))
+    layer_right = float(right_vals.get(key, 0.0))
+    if layer_left <= 0.0 and layer_right <= 0.0:
+        cum_left += layer_left; cum_right += layer_right
+        continue
+    y_center_left = cum_left + (layer_left / 2.0)
+    y_center_right = cum_right + (layer_right / 2.0)
+    fig_stacks.add_trace(go.Scatter(x=categories, y=[y_center_left, y_center_right], mode="lines",
+                                    line=dict(dash="dot", width=2), hoverinfo="skip", showlegend=False))
+    fig_stacks.add_annotation(x=categories[1], y=y_center_right, ax=categories[0], ay=y_center_left,
+                              xref="x", yref="y", axref="x", ayref="y", text="", showarrow=True,
+                              arrowhead=3, arrowsize=1.2, arrowwidth=2, arrowcolor="rgba(0,0,0,0.65)")
+    pct = (layer_right / layer_left * 100.0) if layer_left > 0 else 100.0
+    pct = max(min(pct, 100.0), 0.0)
+    y_mid = 0.5 * (y_center_left + y_center_right)
+    fig_stacks.add_annotation(xref="paper", yref="y", x=0.5, y=y_mid, text=f"{pct:.0f}%", showarrow=False,
+                              font=dict(size=11, color="#374151"),
+                              bgcolor="rgba(255,255,255,0.65)", bordercolor="rgba(0,0,0,0)", borderpad=1)
+    cum_left += layer_left; cum_right += layer_right
+
+fig_stacks.update_layout(
+    barmode="stack", xaxis_title="", yaxis_title="Energy [MJ]", hovermode="x unified",
+    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1.0),
+    margin=dict(l=40, r=20, t=50, b=20), bargap=0.35,
+)
+st.plotly_chart(fig_stacks, use_container_width=True)
+st.caption("Right bar shows in-scope energy after pooled priority: RFNBO/BIO (berth then voyage up to spare), then all at-berth fossils (100%), then 50% of voyage fossils; ELEC always 100%.")
+
+# ──────────────────────────────────────────────────────────────────────────────
+# GHG Intensity vs. FuelEU Limit
+# ──────────────────────────────────────────────────────────────────────────────
+st.markdown('### GHG Intensity vs FuelEU Limit (2025–2050)')
 years = LIMITS_DF["Year"].tolist()
 limit_series = LIMITS_DF["Limit_gCO2e_per_MJ"].tolist()
-step_years = [2025,2030,2035,2040,2045,2050]
+actual_series = [attained_intensity_for_year(y) for y in years]
+step_years = [2025, 2030, 2035, 2040, 2045, 2050]
+limit_text = [f"{limit_series[i]:,.2f}" if years[i] in step_years else "" for i in range(len(years))]
+attained_text = [f"{actual_series[i]:,.2f}" if years[i] in step_years else "" for i in range(len(years))]
 
-# Build per-year series with banking/pooling, penalties/credits (kept from your logic)
+fig = go.Figure()
+fig.add_trace(go.Scatter(x=years, y=limit_series, name="FuelEU Limit (step)",
+                         mode="lines+markers+text", line=dict(shape="hv", width=3),
+                         text=limit_text, textposition="bottom center", textfont=dict(size=12),
+                         hovertemplate="Year=%{x}<br>Limit=%{y:,.2f} gCO₂e/MJ<extra></extra>"))
+fig.add_trace(go.Scatter(x=years, y=actual_series, name="Attained GHG (global pooled)",
+                         mode="lines+text", line=dict(dash="dash", width=3),
+                         text=attained_text, textposition="top center", textfont=dict(size=12),
+                         hovertemplate="Year=%{x}<br>Attained=%{y:,.2f} gCO₂e/MJ<extra></extra>"))
+fig.update_yaxes(tickformat=",.2f")
+fig.update_layout(xaxis_title="Year", yaxis_title="GHG Intensity [gCO₂e/MJ]",
+                  hovermode="x unified",
+                  legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1.0),
+                  margin=dict(l=40, r=20, t=50, b=40))
+st.plotly_chart(fig, use_container_width=True)
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Results — Banking/Pooling + optimizer (kept), using pooled global intensity
+# ──────────────────────────────────────────────────────────────────────────────
+st.header("Results (merged per-year table)")
+
 cb_raw_t, carry_in_list, cb_eff_t = [], [], []
 pool_applied, bank_applied = [], []
 final_balance_t, penalties_eur, credits_eur, g_att_list = [], [], [], []
 penalties_usd, credits_usd = [], []
 carry = 0.0
 fixed_multiplier_by_step = {}
-
 eur_usd_fx = parse_us_any(st.session_state.get("eur_usd_fx", _get(DEFAULTS,"eur_usd_fx",1.0)), 1.0)
 
-for y in years:
-    g_target = float(LIMITS_DF.loc[LIMITS_DF["Year"]==y, "Limit_gCO2e_per_MJ"].iloc[0])
-    g_att = attained_intensity_for_year(y)
+for _, row in LIMITS_DF.iterrows():
+    year = int(row["Year"])
+    g_target = float(row["Limit_gCO2e_per_MJ"])
+    g_att = attained_intensity_for_year(year)
     g_att_list.append(g_att)
 
     CB_g = (g_target - g_att) * E_scope_MJ
@@ -507,7 +631,7 @@ for y in years:
     cb_eff_t.append(cb_eff)
 
     # Pooling
-    if y >= int(st.session_state.get("pooling_start_year", _get(DEFAULTS,"pooling_start_year",YEARS[0]))):
+    if year >= int(st.session_state.get("pooling_start_year", _get(DEFAULTS,"pooling_start_year",YEARS[0]))):
         pooling_tco2e_input = parse_us_any(st.session_state.get("POOL_T", _get(DEFAULTS,"pooling_tco2e",0.0)), 0.0)
         if pooling_tco2e_input >= 0:
             pool_use = pooling_tco2e_input
@@ -519,7 +643,7 @@ for y in years:
         pool_use = 0.0
 
     # Banking
-    if y >= int(st.session_state.get("banking_start_year", _get(DEFAULTS,"banking_start_year",YEARS[0]))):
+    if year >= int(st.session_state.get("banking_start_year", _get(DEFAULTS,"banking_start_year",YEARS[0]))):
         requested_bank = max(parse_us_any(st.session_state.get("BANK_T", _get(DEFAULTS,"banking_tco2e",0.0)),0.0), 0.0)
         pre_surplus = max(cb_eff, 0.0)
         bank_use = min(requested_bank, pre_surplus)
@@ -540,9 +664,9 @@ for y in years:
 
     carry = bank_use
 
-    # Step multiplier (constant within step; seeded)
+    # Constant within step multiplier
     if final_bal < 0:
-        step_idx = _step_of_year(y)
+        step_idx = _step_of_year(year)
         if step_idx not in fixed_multiplier_by_step:
             seed = max(int(st.session_state.get("Consecutive deficit years (seed)", _get(DEFAULTS,"consecutive_deficit_years",1))), 1)
             fixed_multiplier_by_step[step_idx] = 1.0 + (seed - 1) * 0.10
@@ -553,7 +677,7 @@ for y in years:
     # €
     penalty_price_eur_per_vlsfo_t = parse_us_any(st.session_state.get("penalty_per_vlsfo_t_str", _get(DEFAULTS,"penalty_price_eur_per_vlsfo_t",2400.0)), 2400.0)
     credit_per_tco2e = parse_us_any(st.session_state.get("credit_per_tco2e_str", _get(DEFAULTS,"credit_per_tco2e",200.0)), 200.0)
-    factor_preview = (g_preview * 41_000.0) / 1_000_000.0  # use preview for €/tCO2e<->€/VLSFO within UI year
+    factor_preview = (g_preview * 41_000.0) / 1_000_000.0
     if final_bal > 0:
         credit_val = euros_from_tco2e(final_bal, g_att, credit_per_tco2e * factor_preview)
         penalty_val = 0.0
@@ -572,97 +696,23 @@ for y in years:
 # BIO premium & pooling cost series
 bio_mass_total_t_base = (totals_mass["intra_voy"]["BIO"] + totals_mass["extra_voy"]["BIO"] + totals_mass["eu_berth"]["BIO"])
 bio_premium_usd_per_t = parse_us_any(st.session_state.get("bio_premium_usd_per_t", _get(DEFAULTS,"bio_premium_usd_per_t",0.0)), 0.0)
-bio_premium_cost_usd_col = [bio_mass_total_t_base * bio_premium_usd_per_t] * len(years)
+bio_premium_cost_usd_col = [bio_mass_total_t_base * bio_premium_usd_per_t] * len(YEARS)
 pooling_price_eur_per_tco2e = parse_us_any(st.session_state.get("pooling_price_eur_per_tco2e", _get(DEFAULTS,"pooling_price_eur_per_tco2e",200.0)), 200.0)
-pooling_cost_usd_col = [pool_applied[i] * pooling_price_eur_per_tco2e * eur_usd_fx for i in range(len(years))]
-total_cost_usd_col = [penalties_usd[i] + bio_premium_cost_usd_col[i] + pooling_cost_usd_col[i] for i in range(len(years))]
+pooling_cost_usd_col = [pool_applied[i] * pooling_price_eur_per_tco2e * eur_usd_fx for i in range(len(YEARS))]
+total_cost_usd_col = [penalties_usd[i] + bio_premium_cost_usd_col[i] + pooling_cost_usd_col[i] for i in range(len(YEARS))]
 
-# Per-segment mini dashboards
-st.markdown("### Per-segment energy (All vs In-scope)")
-if not st.session_state["abs_segments"]:
-    st.info("No segments yet. Add segments from the left sidebar.")
-else:
-    # For indicative cost share we use YEAR 2025 net compliance (penalty − credit + pooling), excluding BIO premium.
-    year0_idx = 0
-    net_compliance_usd_y0 = (penalties_usd[year0_idx] - credits_usd[year0_idx]) + pooling_cost_usd_col[year0_idx]
-    total_scope_energy_all_segments = max(E_scope_MJ, 1e-9)
+# Optimizer utilities (unchanged logic; use ABS totals & ELEC_MJ)
+HSFO_voy_t = totals_mass["intra_voy"]["HSFO"] + totals_mass["extra_voy"]["HSFO"]
+LFO_voy_t  = totals_mass["intra_voy"]["LFO"]  + totals_mass["extra_voy"]["LFO"]
+MGO_voy_t  = totals_mass["intra_voy"]["MGO"]  + totals_mass["extra_voy"]["MGO"]
+BIO_voy_t  = totals_mass["intra_voy"]["BIO"]  + totals_mass["extra_voy"]["BIO"]
+RFNBO_voy_t= totals_mass["intra_voy"]["RFNBO"]+ totals_mass["extra_voy"]["RFNBO"]
+HSFO_berth_t = totals_mass["eu_berth"]["HSFO"]
+LFO_berth_t  = totals_mass["eu_berth"]["LFO"]
+MGO_berth_t  = totals_mass["eu_berth"]["MGO"]
+BIO_berth_t  = totals_mass["eu_berth"]["BIO"]
+RFNBO_berth_t= totals_mass["eu_berth"]["RFNBO"]
 
-    # Also show an extra “OPS electricity” tile
-    ops_seg = {"type":"OPS", "HSFO_t":0.0,"LFO_t":0.0,"MGO_t":0.0,"BIO_t":0.0,"RFNBO_t":0.0}
-    segments_plus_ops = st.session_state["abs_segments"] + ([ops_seg] if OPS_MJ>0 else [])
-
-    for i, seg in enumerate(segments_plus_ops):
-        col1, col2, col3 = st.columns([1,1,1])
-        with col1:
-            if seg.get("type") == "OPS":
-                energies_all = {"HSFO":0.0,"LFO":0.0,"MGO":0.0,"BIO":0.0,"RFNBO":0.0}
-                energies_scope = dict(energies_all)
-                # Display OPS as separate small bar (single stack)
-                fig_ops = go.Figure()
-                fig_ops.add_trace(go.Bar(x=["All","In-scope"], y=[OPS_MJ, OPS_MJ], name="ELEC (OPS)"))
-                fig_ops.update_layout(barmode="stack", height=240, margin=dict(l=30,r=10,t=40,b=30),
-                                      legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1.0),
-                                      title=dict(text="OPS electricity", x=0.02, y=0.95, font=dict(size=13)))
-                st.plotly_chart(fig_ops, use_container_width=True)
-                bio_premium_usd = 0.0
-                scope_mj_seg = OPS_MJ
-            else:
-                energies_all = _segment_energy_mj(seg)
-                energies_scope = _segment_scope_mj(seg, energies_all)
-                _mini_stack(f"Segment {i+1}: {seg.get('type','')}", energies_all, energies_scope)
-
-                # Costs
-                bio_t_seg = float(seg.get("BIO_t",0.0))
-                bio_premium_usd = bio_t_seg * bio_premium_usd_per_t
-                scope_mj_seg = sum(energies_scope.values())
-
-        # Cost card next to each chart
-        with col2:
-            st.markdown("##### USD cost (segment)")
-            st.write(f"• BIO premium: **${us2(bio_premium_usd)}**")
-            # Indicative compliance share (proportional to in-scope MJ)
-            share = (scope_mj_seg / total_scope_energy_all_segments) if total_scope_energy_all_segments>0 else 0.0
-            comp_share_usd = net_compliance_usd_y0 * share
-            label = "• Indicative compliance share (2025):"
-            st.write(f"{label} **${us2(comp_share_usd)}**")
-            st.caption("Share apportioned by in-scope energy. Global compliance uses pooled allocator; this per-segment view is indicative.")
-
-        with col3:
-            # Quick totals
-            st.markdown("##### Quick numbers")
-            st.write(f"All energy: **{us2(sum(energies_all.values()))} MJ**")
-            st.write(f"In-scope: **{us2(scope_mj_seg)} MJ**")
-
-# ──────────────────────────────────────────────────────────────────────────────
-# System-level chart — GHG Intensity vs Limit
-# ──────────────────────────────────────────────────────────────────────────────
-st.markdown('### GHG Intensity vs. FuelEU Limit (2025–2050)')
-actual_series = [attained_intensity_for_year(y) for y in years]
-limit_text = [f"{limit_series[i]:,.2f}" if years[i] in step_years else "" for i in range(len(years))]
-attained_text = [f"{actual_series[i]:,.2f}" if years[i] in step_years else "" for i in range(len(years))]
-
-fig = go.Figure()
-fig.add_trace(go.Scatter(x=years, y=limit_series, name="FuelEU Limit (step)",
-                         mode="lines+markers+text", line=dict(shape="hv", width=3),
-                         text=limit_text, textposition="bottom center", textfont=dict(size=12),
-                         hovertemplate="Year=%{x}<br>Limit=%{y:,.2f} gCO₂e/MJ<extra></extra>"))
-fig.add_trace(go.Scatter(x=years, y=actual_series, name="Attained GHG (global mix)",
-                         mode="lines+text", line=dict(dash="dash", width=3),
-                         text=attained_text, textposition="top center", textfont=dict(size=12),
-                         hovertemplate="Year=%{x}<br>Attained=%{y:,.2f} gCO₂e/MJ<extra></extra>"))
-fig.update_yaxes(tickformat=",.2f")
-fig.update_layout(xaxis_title="Year", yaxis_title="GHG Intensity [gCO₂e/MJ]",
-                  hovermode="x unified",
-                  legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1.0),
-                  margin=dict(l=40, r=20, t=50, b=40))
-st.plotly_chart(fig, use_container_width=True)
-
-# ──────────────────────────────────────────────────────────────────────────────
-# Results table (your banking/pooling + optimizer kept)
-# ──────────────────────────────────────────────────────────────────────────────
-st.header("Results (merged per-year table)")
-
-# Optimizer helpers (unchanged logic except inputs come from ABS totals)
 def scoped_and_intensity_from_masses(h_v, l_v, m_v, b_v, r_v, h_b, l_b, m_b, b_b, r_b, elec_MJ, wtw_dict, year) -> Tuple[float,float,float]:
     energies_v = {
         "HSFO": compute_energy_MJ(h_v, LCV_HSFO),
@@ -687,10 +737,10 @@ def scoped_and_intensity_from_masses(h_v, l_v, m_v, b_v, r_v, h_b, l_b, m_b, b_b
 def penalty_usd_with_masses_for_year(year_idx: int,
                                      h_v, l_v, m_v, b_v, r_v,
                                      h_b, l_b, m_b, b_b, r_b) -> Tuple[float, float]:
-    year = years[year_idx]
-    g_target = limit_series[year_idx]
+    year = YEARS[year_idx]
+    g_target = LIMITS_DF["Limit_gCO2e_per_MJ"].iloc[year_idx]
     E_scope_x, num_phys_x, E_rfnbo_scope_x = scoped_and_intensity_from_masses(
-        h_v, l_v, m_v, b_v, r_v, h_b, l_b, m_b, b_b, r_b, OPS_MJ, wtw, year
+        h_v, l_v, m_v, b_v, r_v, h_b, l_b, m_b, b_b, r_b, ELEC_MJ, wtw, year
     )
     if E_scope_x <= 0: return 0.0, 0.0
     r = 2.0 if year <= 2033 else 1.0
@@ -701,7 +751,7 @@ def penalty_usd_with_masses_for_year(year_idx: int,
     CB_t_raw_x = CB_g_x / 1e6
     cb_eff_x = CB_t_raw_x + carry_in_list[year_idx]
 
-    if years[year_idx] >= int(pooling_start_year):
+    if YEARS[year_idx] >= int(pooling_start_year):
         if pooling_tco2e_input >= 0:
             pool_use_x = pooling_tco2e_input
         else:
@@ -711,7 +761,7 @@ def penalty_usd_with_masses_for_year(year_idx: int,
     else:
         pool_use_x = 0.0
 
-    if years[year_idx] >= int(banking_start_year):
+    if YEARS[year_idx] >= int(banking_start_year):
         pre_surplus = max(cb_eff_x, 0.0)
         requested_bank = max(banking_tco2e_input, 0.0)
         bank_use_x = min(requested_bank, pre_surplus)
@@ -749,17 +799,16 @@ def masses_after_shift_generic(fuel: str, x_decrease_t: float) -> Tuple[float,fl
     bio_increase_t = (x * LCV_S / LCV_BIO) if LCV_BIO > 0 else 0.0
     take_v = min(x, s_v); s_v -= take_v
     rem = x - take_v; s_b = max(0.0, s_b - rem)
-    b_b += min(bio_increase_t, float("inf"))
-    rem_bio = bio_increase_t - min(bio_increase_t, float("inf"))
+    add_b = min(bio_increase_t, float("inf")); b_b += add_b
+    rem_bio = bio_increase_t - add_b
     if rem_bio > 0: b_v += rem_bio
     if fuel == "HSFO": h_v, h_b = s_v, s_b
     elif fuel == "LFO": l_v, l_b = s_v, s_b
     else: m_v, m_b = s_v, s_b
     return h_v, l_v, m_v, b_v, r_v, h_b, l_b, m_b, b_b, r_b
 
-# Optimizer scan (same approach)
 dec_opt_list, bio_inc_opt_list = [], []
-for i in range(len(years)):
+for i in range(len(YEARS)):
     if selected_fuel_for_opt == "HSFO": total_avail, LCV_SEL = HSFO_voy_t + HSFO_berth_t, LCV_HSFO
     elif selected_fuel_for_opt == "LFO": total_avail, LCV_SEL = LFO_voy_t + LFO_berth_t, LCV_LFO
     else:                                 total_avail, LCV_SEL = MGO_voy_t + MGO_berth_t, LCV_MGO
@@ -786,9 +835,8 @@ for i in range(len(years)):
     bio_inc_opt = dec_opt * (LCV_SEL / LCV_BIO) if LCV_BIO > 0 else 0.0
     dec_opt_list.append(dec_opt); bio_inc_opt_list.append(bio_inc_opt)
 
-# Recompute optimized costs
 penalties_usd_opt_col, bio_premium_cost_usd_opt_col, total_cost_usd_opt_col = [], [], []
-for i in range(len(years)):
+for i in range(len(YEARS)):
     x_opt = dec_opt_list[i]
     if x_opt <= 0.0 or LCV_BIO <= 0.0:
         penalties_usd_opt = penalties_usd[i]
@@ -802,14 +850,13 @@ for i in range(len(years)):
     bio_premium_cost_usd_opt_col.append(bio_premium_usd_opt)
     total_cost_usd_opt_col.append(penalties_usd_opt + bio_premium_usd_opt + pooling_cost_usd_col[i])
 
-# Table
 decrease_col_name = f"{selected_fuel_for_opt}_decrease(t)_for_Opt_Cost"
 df_cost = pd.DataFrame({
-    "Year": years,
+    "Year": YEARS,
     "Reduction_%": LIMITS_DF["Reduction_%"].tolist(),
     "Limit_gCO2e_per_MJ": LIMITS_DF["Limit_gCO2e_per_MJ"].tolist(),
-    "Actual_gCO2e_per_MJ": [attained_intensity_for_year(y) for y in years],
-    "Emissions_tCO2e": [ (g_base * E_scope_MJ) / 1e6 ]*len(years),
+    "Actual_gCO2e_per_MJ": [attained_intensity_for_year(y) for y in YEARS],
+    "Emissions_tCO2e": [ (g_base * E_scope_MJ) / 1e6 ]*len(YEARS),
     "Compliance_Balance_tCO2e": cb_raw_t,
     "CarryIn_Banked_tCO2e": carry_in_list,
     "Effective_Balance_tCO2e": cb_eff_t,
@@ -819,7 +866,7 @@ df_cost = pd.DataFrame({
     "Pooling_Cost_USD": pooling_cost_usd_col,
     "Penalty_USD": penalties_usd,
     "Credit_USD": credits_usd,
-    "BIO Premium Cost_USD": bio_premium_cost_usd_col,
+    "BIO Premium Cost_USD": [ (totals_mass["intra_voy"]["BIO"] + totals_mass["extra_voy"]["BIO"] + totals_mass["eu_berth"]["BIO"]) * bio_premium_usd_per_t ] * len(YEARS),
     "Total_Cost_USD": total_cost_usd_col,
     decrease_col_name: dec_opt_list,
     "BIO_Increase(t)_For_Opt_Cost": bio_inc_opt_list,
@@ -828,6 +875,5 @@ df_cost = pd.DataFrame({
 df_fmt = df_cost.copy()
 for col in df_fmt.columns:
     if col != "Year": df_fmt[col] = df_fmt[col].apply(us2)
-
 st.dataframe(df_fmt, use_container_width=True)
 st.download_button("Download per-year results (CSV)", data=df_fmt.to_csv(index=False), file_name="fueleu_results_2025_2050.csv", mime="text/csv")
