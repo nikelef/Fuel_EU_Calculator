@@ -482,6 +482,7 @@ def _stack_with_arrows(title: str, left_vals: Dict[str,float], right_vals: Dict[
         fig.add_annotation(xref="paper", yref="y", x=0.5, y=y_mid, text=f"{pct:.0f}%", showarrow=False,
                            font=dict(size=11, color="#374151"),
                            bgcolor="rgba(255,255,255,0.65)", bordercolor="rgba(0,0,0,0)", borderpad=1)
+        cum_left += layer_left; cum_right += layer_right
 
     fig.update_layout(
         title=dict(text=title, x=0.02, y=0.95, font=dict(size=13)),
@@ -624,6 +625,7 @@ for key, label in stack_layers_global:
     fig_stacks.add_annotation(xref="paper", yref="y", x=0.5, y=y_mid, text=f"{pct:.0f}%", showarrow=False,
                               font=dict(size=11, color="#374151"),
                               bgcolor="rgba(255,255,255,0.65)", bordercolor="rgba(0,0,0,0)", borderpad=1)
+    cum_left += layer_left; cum_right += layer_right
 
 fig_stacks.update_layout(
     barmode="stack", xaxis_title="", yaxis_title="Energy [MJ]", hovermode="x unified",
@@ -634,7 +636,7 @@ st.plotly_chart(fig_stacks, use_container_width=True)
 st.caption("Combined right bar = sum of per-segment in-scope energies (with cross-border prioritized allocation toggle as selected; OPS from EU-berth only).")
 
 # ──────────────────────────────────────────────────────────────────────────────
-# GHG Intensity vs FuelEU Limit (uses combined in-scope)
+# GHG Intensity vs. FuelEU Limit (uses combined in-scope)
 # ──────────────────────────────────────────────────────────────────────────────
 st.markdown('### GHG Intensity vs FuelEU Limit (2025–2050)')
 years = LIMITS_DF["Year"].tolist()
@@ -759,33 +761,21 @@ pooling_cost_usd_col = [pool_applied[i] * pooling_price_eur_per_tco2e_val * eur_
 total_cost_usd_col = [penalties_usd[i] + bio_premium_cost_usd_col[i] + pooling_cost_usd_col[i] for i in range(len(YEARS))]
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Optimizer utilities (policy applied; pooled allocator still used for evaluation)
+# Optimizer utilities (kept as in prior version; uses pooled allocator approximation)
 # ──────────────────────────────────────────────────────────────────────────────
-# Split masses into the three buckets we need for policy:
-#   • extra_voy  = cross-border voyages
-#   • intra_voy  = intra-EU voyages
-#   • berth      = EU at-berth (port stay)
-HSFO_extra_voy_t = totals_mass["extra_voy"]["HSFO"]; HSFO_intra_voy_t = totals_mass["intra_voy"]["HSFO"]; HSFO_berth_t = totals_mass["eu_berth"]["HSFO"]
-LFO_extra_voy_t  = totals_mass["extra_voy"]["LFO"];  LFO_intra_voy_t  = totals_mass["intra_voy"]["LFO"];  LFO_berth_t  = totals_mass["eu_berth"]["LFO"]
-MGO_extra_voy_t  = totals_mass["extra_voy"]["MGO"];  MGO_intra_voy_t  = totals_mass["intra_voy"]["MGO"];  MGO_berth_t  = totals_mass["eu_berth"]["MGO"]
-
-BIO_extra_voy_t  = totals_mass["extra_voy"]["BIO"];  BIO_intra_voy_t  = totals_mass["intra_voy"]["BIO"];  BIO_berth_t  = totals_mass["eu_berth"]["BIO"]
-RFNBO_extra_voy_t= totals_mass["extra_voy"]["RFNBO"];RFNBO_intra_voy_t= totals_mass["intra_voy"]["RFNBO"];RFNBO_berth_t= totals_mass["eu_berth"]["RFNBO"]
-
-# Aggregates also kept (used in several places)
-HSFO_voy_t = HSFO_extra_voy_t + HSFO_intra_voy_t
-LFO_voy_t  = LFO_extra_voy_t  + LFO_intra_voy_t
-MGO_voy_t  = MGO_extra_voy_t  + MGO_intra_voy_t
-BIO_voy_t  = BIO_extra_voy_t  + BIO_intra_voy_t
-RFNBO_voy_t= RFNBO_extra_voy_t+ RFNBO_intra_voy_t
-ELEC_MJ    = ELEC_MJ_input
+HSFO_voy_t = totals_mass["intra_voy"]["HSFO"] + totals_mass["extra_voy"]["HSFO"]
+LFO_voy_t  = totals_mass["intra_voy"]["LFO"]  + totals_mass["extra_voy"]["LFO"]
+MGO_voy_t  = totals_mass["intra_voy"]["MGO"]  + totals_mass["extra_voy"]["MGO"]
+BIO_voy_t  = totals_mass["intra_voy"]["BIO"]  + totals_mass["extra_voy"]["BIO"]
+RFNBO_voy_t= totals_mass["intra_voy"]["RFNBO"]+ totals_mass["extra_voy"]["RFNBO"]
+HSFO_berth_t = totals_mass["eu_berth"]["HSFO"]
+LFO_berth_t  = totals_mass["eu_berth"]["LFO"]
+MGO_berth_t  = totals_mass["eu_berth"]["MGO"]
+BIO_berth_t  = totals_mass["eu_berth"]["BIO"]
+RFNBO_berth_t= totals_mass["eu_berth"]["RFNBO"]
+ELEC_MJ = ELEC_MJ_input
 
 def scoped_and_intensity_from_masses(h_v, l_v, m_v, b_v, r_v, h_b, l_b, m_b, b_b, r_b, elec_MJ, wtw_dict, year) -> Tuple[float,float,float]:
-    """
-    Evaluation still uses the pooled extra-EU approximation you already had:
-      • Pool = 100% berth + 50% of total voyage (fuels only), ELEC 100%.
-      • Fill by ascending WtW.
-    """
     energies_v = {
         "HSFO": compute_energy_MJ(h_v, LCV_HSFO),
         "LFO":  compute_energy_MJ(l_v, LCV_LFO),
@@ -809,15 +799,12 @@ def scoped_and_intensity_from_masses(h_v, l_v, m_v, b_v, r_v, h_b, l_b, m_b, b_b
 def penalty_usd_with_masses_for_year(year_idx: int,
                                      h_v, l_v, m_v, b_v, r_v,
                                      h_b, l_b, m_b, b_b, r_b) -> Tuple[float, float]:
-    """Returns (penalty_usd, attained_g). Uses your constant-within-step multiplier logic."""
     year = YEARS[year_idx]
     g_target = LIMITS_DF["Limit_gCO2e_per_MJ"].iloc[year_idx]
     E_scope_x, num_phys_x, E_rfnbo_scope_x = scoped_and_intensity_from_masses(
         h_v, l_v, m_v, b_v, r_v, h_b, l_b, m_b, b_b, r_b, ELEC_MJ, wtw, year
     )
-    if E_scope_x <= 0:
-        return 0.0, 0.0
-
+    if E_scope_x <= 0: return 0.0, 0.0
     r = 2.0 if year <= 2033 else 1.0
     den_rwd_x = E_scope_x + (r - 1.0) * E_rfnbo_scope_x
     g_att_x = (num_phys_x / den_rwd_x) if den_rwd_x > 0 else 0.0
@@ -826,7 +813,6 @@ def penalty_usd_with_masses_for_year(year_idx: int,
     CB_t_raw_x = CB_g_x / 1e6
     cb_eff_x = CB_t_raw_x + carry_in_list[year_idx]
 
-    # Pooling / banking (same as your main path)
     if YEARS[year_idx] >= int(pooling_start_year):
         if pooling_tco2e_input >= 0:
             pool_use_x = pooling_tco2e_input
@@ -863,95 +849,42 @@ def penalty_usd_with_masses_for_year(year_idx: int,
         penalty_usd_x = penalty_eur_x * eur_usd_fx_val
     else:
         penalty_usd_x = 0.0
-
     return penalty_usd_x, g_att_x
 
 def masses_after_shift_generic(fuel: str, x_decrease_t: float) -> Tuple[float,float,float,float,float,float,float,float,float,float]:
-    """
-    Applies the policy order for swap:
-      • Selected fossil ↓: cross-border voyage → intra-EU voyage → EU at-berth.
-      • BIO ↑: EU at-berth → cross-border voyage → intra-EU voyage.
-      • Energy-balance: BIO_t = Fossil_t × (LCV_fossil / LCV_BIO).
-    Returns aggregated (voyage totals, berth) per fuel for evaluation.
-    """
-    # Start from current buckets
-    h_ex, h_in, h_b = HSFO_extra_voy_t, HSFO_intra_voy_t, HSFO_berth_t
-    l_ex, l_in, l_b = LFO_extra_voy_t,  LFO_intra_voy_t,  LFO_berth_t
-    m_ex, m_in, m_b = MGO_extra_voy_t,  MGO_intra_voy_t,  MGO_berth_t
-
-    b_ex, b_in, b_b = BIO_extra_voy_t,  BIO_intra_voy_t,  BIO_berth_t
-    r_ex, r_in, r_b = RFNBO_extra_voy_t,RFNBO_intra_voy_t,RFNBO_berth_t
-
-    # Select the fossil to reduce and its LCV
-    if fuel == "HSFO":
-        s_ex, s_in, s_b, LCV_S = h_ex, h_in, h_b, LCV_HSFO
-    elif fuel == "LFO":
-        s_ex, s_in, s_b, LCV_S = l_ex, l_in, l_b, LCV_LFO
-    else:
-        s_ex, s_in, s_b, LCV_S = m_ex, m_in, m_b, LCV_MGO
-
-    # Clamp x to available tonnes
-    total_avail = s_ex + s_in + s_b
-    x = max(0.0, float(x_decrease_t))
-    x = min(x, total_avail)
-
-    # Fossil decrease: cross-border → intra-EU → berth
-    take_ex = min(x, s_ex); s_ex -= take_ex; rem = x - take_ex
-    if rem > 0:
-        take_in = min(rem, s_in); s_in -= take_in; rem -= take_in
-    if rem > 0:
-        s_b = max(0.0, s_b - rem)  # consume the rest from berth
-
-    # BIO increase (energy-balanced): berth → cross-border → intra-EU
+    h_v, l_v, m_v, b_v, r_v = HSFO_voy_t, LFO_voy_t, MGO_voy_t, BIO_voy_t, RFNBO_voy_t
+    h_b, l_b, m_b, b_b, r_b = HSFO_berth_t, LFO_berth_t, MGO_berth_t, BIO_berth_t, RFNBO_berth_t
+    if fuel == "HSFO": s_v, s_b, LCV_S = h_v, h_b, LCV_HSFO
+    elif fuel == "LFO": s_v, s_b, LCV_S = l_v, l_b, LCV_LFO
+    else:              s_v, s_b, LCV_S = m_v, m_b, LCV_MGO
+    x = max(0.0, float(x_decrease_t)); x = min(x, s_v + s_b)
     bio_increase_t = (x * LCV_S / LCV_BIO) if LCV_BIO > 0 else 0.0
-    add_b  = min(bio_increase_t, float("inf")); b_b += add_b
-    rem_b  = bio_increase_t - add_b
-    if rem_b > 0:
-        add_ex = min(rem_b, float("inf")); b_ex += add_ex
-        rem_b -= add_ex
-    if rem_b > 0:
-        b_in += rem_b
-
-    # Write back the selected fossil buckets
-    if fuel == "HSFO":
-        h_ex, h_in, h_b = s_ex, s_in, s_b
-    elif fuel == "LFO":
-        l_ex, l_in, l_b = s_ex, s_in, s_b
-    else:
-        m_ex, m_in, m_b = s_ex, s_in, s_b
-
-    # Return aggregated voyage + berth per fuel (evaluation expects these 10 values)
-    h_v = h_ex + h_in; l_v = l_ex + l_in; m_v = m_ex + m_in
-    b_v = b_ex + b_in; r_v = r_ex + r_in
+    take_v = min(x, s_v); s_v -= take_v
+    rem = x - take_v; s_b = max(0.0, s_b - rem)
+    add_b = min(bio_increase_t, float("inf")); b_b += add_b
+    rem_bio = bio_increase_t - add_b
+    if rem_bio > 0: b_v += rem_bio
+    if fuel == "HSFO": h_v, h_b = s_v, s_b
+    elif fuel == "LFO": l_v, l_b = s_v, s_b
+    else: m_v, m_b = s_v, s_b
     return h_v, l_v, m_v, b_v, r_v, h_b, l_b, m_b, b_b, r_b
 
-# Grid search (coarse + fine)
+# Optimizer search (coarse + fine)
 dec_opt_list, bio_inc_opt_list = [], []
 for i in range(len(YEARS)):
-    if selected_fuel_for_opt == "HSFO":
-        total_avail, LCV_SEL = HSFO_voy_t + HSFO_berth_t, LCV_HSFO
-    elif selected_fuel_for_opt == "LFO":
-        total_avail, LCV_SEL = LFO_voy_t + LFO_berth_t, LCV_LFO
-    else:
-        total_avail, LCV_SEL = MGO_voy_t + MGO_berth_t, LCV_MGO
-
-    if total_avail <= 0 or LCV_BIO <= 0:
-        dec_opt_list.append(0.0); bio_inc_opt_list.append(0.0); continue
-
+    if selected_fuel_for_opt == "HSFO": total_avail, LCV_SEL = HSFO_voy_t + HSFO_berth_t, LCV_HSFO
+    elif selected_fuel_for_opt == "LFO": total_avail, LCV_SEL = LFO_voy_t + LFO_berth_t, LCV_LFO
+    else:                                 total_avail, LCV_SEL = MGO_voy_t + MGO_berth_t, LCV_MGO
+    if total_avail <= 0 or LCV_BIO <= 0: dec_opt_list.append(0.0); bio_inc_opt_list.append(0.0); continue
     steps_coarse, x_max = 60, total_avail
     best_x, best_cost = 0.0, float("inf")
-
-    # Coarse
     for s in range(steps_coarse + 1):
         x = x_max * s / steps_coarse
         masses = masses_after_shift_generic(selected_fuel_for_opt, x)
         penalty_usd_x, _ = penalty_usd_with_masses_for_year(i, *masses)
         new_bio_total_t = (masses[3] + masses[8])  # b_v + b_b
         total_cost_x = penalty_usd_x + new_bio_total_t * bio_premium_usd_per_t_val
-        if total_cost_x < best_cost:
-            best_cost, best_x = total_cost_x, x
-
-    # Fine
+        if total_cost_x < best_cost: best_cost, best_x = total_cost_x, x
     delta = x_max / steps_coarse * 2.0
     left, right, steps_fine = max(0.0, best_x - delta), min(x_max, best_x + delta), 80
     for s in range(steps_fine + 1):
@@ -960,13 +893,10 @@ for i in range(len(YEARS)):
         penalty_usd_x, _ = penalty_usd_with_masses_for_year(i, *masses)
         new_bio_total_t = (masses[3] + masses[8])
         total_cost_x = penalty_usd_x + new_bio_total_t * bio_premium_usd_per_t_val
-        if total_cost_x < best_cost:
-            best_cost, best_x = total_cost_x, x
-
+        if total_cost_x < best_cost: best_cost, best_x = total_cost_x, x
     dec_opt = best_x
     bio_inc_opt = dec_opt * (LCV_SEL / LCV_BIO) if LCV_BIO > 0 else 0.0
-    dec_opt_list.append(dec_opt)
-    bio_inc_opt_list.append(bio_inc_opt)
+    dec_opt_list.append(dec_opt); bio_inc_opt_list.append(bio_inc_opt)
 
 # Recompute optimized cost columns (penalty under pooled approximation)
 penalties_usd_opt_col, bio_premium_cost_usd_opt_col, total_cost_usd_opt_col = [], [], []
