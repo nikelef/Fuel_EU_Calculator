@@ -1,10 +1,13 @@
 # app.py — FuelEU Maritime Calculator (ABS segments, pooled final, tidy sidebar)
-# Key changes:
-#   • Attained GHG uses the pooled global mix of ALL segments (not first-only).
-#   • OPS electricity lives only in EU at-berth segments (kWh→MJ, 100% in-scope).
-#   • Per-segment stacks: arrows (All→In-scope), % retained, ascending WtW, original colors, MJ hover.
-#   • Final combined stack (all segments), in-scope via pool priority.
-#   • Sidebar formatting tightened; top metrics smaller text.
+# Key changes in this version:
+#   • Per-segment toggle “Apply prioritized allocation” added for cross-border segments
+#     ("EU→non-EU voyage" and "non-EU→EU voyage"). When ON, the per-segment in-scope bar
+#     is computed with prioritized allocation (renewables first within the 50% pool).
+#     When OFF, it falls back to simple 50% scope.
+#   • Global compliance and the final combined stack remain based on the pooled,
+#     prioritized allocation of ALL segments (as in your base code).
+#   • All other functionality preserved: OPS only on EU-berth, derived prices non-zero,
+#     stacked visuals with arrows & % retained, cost table, optimizer, banking & pooling.
 
 from __future__ import annotations
 import json, os
@@ -120,9 +123,14 @@ def scoped_energies_extra_eu(energies_fuel_voyage: Dict[str, float],
                              energies_fuel_berth: Dict[str, float],
                              elec_MJ: float,
                              wtw: Dict[str, float]) -> Dict[str, float]:
+    """
+    Global ABS-style prioritized allocation (used for combined compliance).
+    Also reused per-segment when the toggle is ON (with zero berth & elec).
+    """
     def g(d, k): return float(d.get(k, 0.0))
     fossils = ["HSFO", "LFO", "MGO"]
     foss_sorted = sorted(fossils, key=lambda f: wtw.get(f, float("inf")))
+
     total_voy = sum(energies_fuel_voyage.values())
     half_voy  = 0.5 * total_voy
     berth_fossil_total = sum(g(energies_fuel_berth, f) for f in fossils)
@@ -132,8 +140,8 @@ def scoped_energies_extra_eu(energies_fuel_voyage: Dict[str, float],
     scoped["ELEC"] = max(elec_MJ, 0.0)
     remaining = pool_total  # fuels only
 
+    # Renewables — at-berth first, then voyage (up to spare after reserving berth fossils)
     ren_sorted = sorted(["RFNBO","BIO"], key=lambda f: wtw.get(f, float("inf")))
-    # Renewables — at-berth first
     for f in ren_sorted:
         take_b = min(g(energies_fuel_berth, f), remaining)
         if take_b > 0: scoped[f] += take_b; remaining -= take_b
@@ -142,18 +150,21 @@ def scoped_energies_extra_eu(energies_fuel_voyage: Dict[str, float],
         take_v = min(g(energies_fuel_voyage, f), spare_for_voy_ren)
         if take_v > 0: scoped[f] += take_v; remaining -= take_v
         if remaining <= 0: return scoped
+
     # Fossil at-berth — 100%
     for f in foss_sorted:
         take = min(g(energies_fuel_berth, f), remaining)
         if take > 0: scoped[f] += take; remaining -= take
         if remaining <= 0: return scoped
-    # Fossil voyage — 50%
+
+    # Fossil voyage — 50% per fuel, ascending WtW
     for f in foss_sorted:
         half_v = 0.5 * g(energies_fuel_voyage, f)
         if half_v <= 0 or remaining <= 0: continue
         take = min(half_v, remaining)
         scoped[f] += take; remaining -= take
         if remaining <= 0: return scoped
+
     return scoped
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -167,7 +178,13 @@ SEG_TYPES = [
 ]
 
 def _default_segment() -> Dict[str, Any]:
-    return {"type": SEG_TYPES[0], "HSFO_t": 0.0, "LFO_t": 0.0, "MGO_t": 0.0, "BIO_t": 0.0, "RFNBO_t": 0.0, "OPS_kWh": 0.0}
+    # prio_on default True for cross-border segments; harmless for the others
+    return {
+        "type": SEG_TYPES[0],
+        "HSFO_t": 0.0, "LFO_t": 0.0, "MGO_t": 0.0, "BIO_t": 0.0, "RFNBO_t": 0.0,
+        "OPS_kWh": 0.0,
+        "prio_on": True
+    }
 
 def _ensure_segments_state():
     if "abs_segments" not in st.session_state:
@@ -224,7 +241,7 @@ with st.sidebar:
     _ensure_segments_state()
 
     # 1) Segments builder
-    st.markdown('<div class="card"><h4>ABS segments</h4><div class="help">Add voyages and EU at-berth stays one by one. OPS appears only inside EU at-berth.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="card"><h4>ABS segments</h4><div class="help">Add voyages and EU at-berth stays one by one. OPS appears only inside EU at-berth. Cross-border segments have a toggle for prioritized allocation in their per-segment view.</div>', unsafe_allow_html=True)
     col_add, col_clear = st.columns([1,1])
     with col_add:
         if st.button("➕ Add segment"):
@@ -237,6 +254,9 @@ with st.sidebar:
     for i, seg in enumerate(st.session_state["abs_segments"]):
         with st.expander(f"Segment {i+1}", expanded=True):
             seg["type"] = st.selectbox("Type", SEG_TYPES, index=SEG_TYPES.index(seg.get("type", SEG_TYPES[0])), key=f"seg_type_{i}")
+            # Toggle appears only for cross-border voyages
+            if seg["type"] in ("EU→non-EU voyage", "non-EU→EU voyage"):
+                seg["prio_on"] = st.checkbox("Apply prioritized allocation", value=bool(seg.get("prio_on", True)), key=f"seg_prio_{i}")
             cA, cB = st.columns(2)
             with cA:
                 seg["HSFO_t"]  = float_text_input("HSFO [t]" , seg.get("HSFO_t", 0.0), key=f"seg_hsfo_{i}",  min_value=0.0)
@@ -425,14 +445,28 @@ def _segment_energy_mj(seg: Dict[str, Any]) -> Dict[str,float]:
         "RFNBO":compute_energy_MJ(seg.get("RFNBO_t",0.0), LCV_RFNBO),
     }
 
-def _segment_scope_simple(seg: Dict[str,Any], energies_all: Dict[str,float]) -> Tuple[Dict[str,float], float]:
+def _segment_scope_with_toggle(seg: Dict[str,Any], energies_all: Dict[str,float]) -> Tuple[Dict[str,float], float]:
+    """
+    Returns (in_scope_dict, elec_MJ_for_segment).
+    • Intra-EU voyage: 100% in-scope.
+    • EU at-berth:     100% in-scope + ELEC.
+    • Cross-border voyage:
+        - If toggle ON → prioritized allocation on this segment only (berth=0, elec=0).
+        - If toggle OFF → simple 50% of all energies.
+    """
     t = seg.get("type", SEG_TYPES[0])
     if t == "Intra-EU voyage":
         return dict(energies_all), 0.0
     if t == "EU at-berth (port stay)":
         return dict(energies_all), float(seg.get("OPS_kWh",0.0))*3.6
-    # Cross-border voyage ⇒ 50% simple scope (per ABS-style per-segment view)
-    return {k: 0.5*energies_all[k] for k in energies_all.keys()}, 0.0
+    # Cross-border
+    prio_on = bool(seg.get("prio_on", True))
+    if prio_on:
+        zero_berth = {k:0.0 for k in ["HSFO","LFO","MGO","BIO","RFNBO"]}
+        scoped_seg = scoped_energies_extra_eu(energies_all, zero_berth, 0.0, wtw)
+        return scoped_seg, 0.0
+    else:
+        return {k: 0.5*energies_all[k] for k in energies_all.keys()}, 0.0
 
 def _stack_with_arrows(title: str, left_vals: Dict[str,float], right_vals: Dict[str,float], show_elec: bool):
     categories = ["All", "In-scope"]
@@ -493,7 +527,7 @@ if not st.session_state["abs_segments"]:
 else:
     for i, seg in enumerate(st.session_state["abs_segments"]):
         energies_all = _segment_energy_mj(seg)
-        energies_scope, elec_mj_seg = _segment_scope_simple(seg, energies_all)
+        energies_scope, elec_mj_seg = _segment_scope_with_toggle(seg, energies_all)
         left_vals = dict(energies_all)
         right_vals = dict(energies_scope)
         if seg["type"] == "EU at-berth (port stay)":
@@ -668,7 +702,7 @@ for _, row in LIMITS_DF.iterrows():
     if final_bal < 0:
         step_idx = _step_of_year(year)
         if step_idx not in fixed_multiplier_by_step:
-            seed = max(int(st.session_state.get("Consecutive deficit years (seed)", _get(DEFAULTS,"consecutive_deficit_years",1))), 1)
+            seed = max(int(consecutive_deficit_years_seed), 1)  # fixed to use the sidebar value directly
             fixed_multiplier_by_step[step_idx] = 1.0 + (seed - 1) * 0.10
         mult = fixed_multiplier_by_step[step_idx]
     else:
