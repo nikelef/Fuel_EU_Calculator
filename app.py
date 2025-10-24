@@ -269,7 +269,7 @@ with st.sidebar:
     _ensure_segments_state()
 
     # 1) Segments builder
-    st.markdown('<div class="card"><h4>ABS segments</h4><div class="help">Add voyages and EU at-berth stays one by one. OPS appears only inside EU at-berth. Cross-border segments have a toggle for prioritized allocation (applies to all fuels by ascending WtW).</div>', unsafe_allow_html=True)
+    st.markdown('<div class="card"><h4>Voyage segments</h4><div class="help">Add voyages and EU at-berth stays one by one. OPS appears only inside EU at-berth. Cross-border segments have a toggle for prioritized allocation (applies to all fuels by ascending WtW).</div>', unsafe_allow_html=True)
     col_add, col_clear = st.columns([1,1])
     with col_add:
         if st.button("➕ Add segment"):
