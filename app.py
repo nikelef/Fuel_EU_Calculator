@@ -304,20 +304,40 @@ with st.sidebar:
 
     # 2) Fuel properties
     st.markdown('<div class="card"><h4>Fuel properties</h4>', unsafe_allow_html=True)
-    l1, l2 = st.columns(2)
-    with l1:
-        LCV_HSFO = float_text_input("HSFO LCV [MJ/t]", _get(DEFAULTS, "LCV_HSFO", 40_200.0), key="LCV_HSFO", min_value=0.0)
-        LCV_MGO  = float_text_input("MGO LCV [MJ/t]" , _get(DEFAULTS, "LCV_MGO" , 42_700.0), key="LCV_MGO", min_value=0.0)
-        WtW_HSFO = float_text_input("HSFO WtW [g/MJ]", _get(DEFAULTS, "WtW_HSFO", 92.78),    key="WtW_HSFO", min_value=0.0)
-        WtW_MGO  = float_text_input("MGO WtW [g/MJ]" , _get(DEFAULTS, "WtW_MGO" , 93.93),    key="WtW_MGO",  min_value=0.0)
-    with l2:
-        LCV_LFO   = float_text_input("LFO LCV [MJ/t]"  , _get(DEFAULTS, "LCV_LFO" , 42_700.0), key="LCV_LFO", min_value=0.0)
-        LCV_BIO   = float_text_input("BIO LCV [MJ/t]"  , _get(DEFAULTS, "LCV_BIO" , 38_000.0), key="LCV_BIO", min_value=0.0)
-        LCV_RFNBO = float_text_input("RFNBO LCV [MJ/t]", _get(DEFAULTS, "LCV_RFNBO", 30_000.0), key="LCV_RFNBO", min_value=0.0)
-        WtW_LFO   = float_text_input("LFO WtW [g/MJ]"  , _get(DEFAULTS, "WtW_LFO" , 92.00),     key="WtW_LFO",  min_value=0.0)
-        WtW_RFNBO = float_text_input("RFNBO WtW [g/MJ]", _get(DEFAULTS, "WtW_RFNBO", 20.00),    key="WtW_RFNBO",min_value=0.0)
-        WtW_BIO   = float_text_input("BIO WtW [g/MJ]"  , _get(DEFAULTS, "WtW_BIO" , 70.00),     key="WtW_BIO",  min_value=0.0)
+
+    # — LCVs first (MJ/t) —
+    st.markdown("**Lower Heating Values (LCV)** [MJ/t]")
+    lcv_c1, lcv_c2, lcv_c3 = st.columns(3)
+    with lcv_c1:
+        LCV_HSFO  = float_text_input("HSFO LCV [MJ/t]" , _get(DEFAULTS, "LCV_HSFO" , 40_200.0), key="LCV_HSFO",  min_value=0.0)
+    with lcv_c2:
+        LCV_LFO   = float_text_input("LFO LCV [MJ/t]"  , _get(DEFAULTS, "LCV_LFO"  , 42_700.0), key="LCV_LFO",   min_value=0.0)
+    with lcv_c3:
+        LCV_MGO   = float_text_input("MGO LCV [MJ/t]"  , _get(DEFAULTS, "LCV_MGO"  , 42_700.0), key="LCV_MGO",   min_value=0.0)
+    lcv_c4, lcv_c5 = st.columns(2)
+    with lcv_c4:
+        LCV_BIO   = float_text_input("BIO LCV [MJ/t]"  , _get(DEFAULTS, "LCV_BIO"  , 38_000.0), key="LCV_BIO",   min_value=0.0)
+    with lcv_c5:
+       LCV_RFNBO = float_text_input("RFNBO LCV [MJ/t]", _get(DEFAULTS, "LCV_RFNBO", 30_000.0), key="LCV_RFNBO", min_value=0.0)
+
+    st.markdown("<hr style='margin:0.35rem 0;'/>", unsafe_allow_html=True)
+
+    # — WtW after (gCO₂e/MJ) —
+    st.markdown("**Well-to-Wake (WtW) intensities** [gCO₂e/MJ]")
+    wtw_c1, wtw_c2, wtw_c3 = st.columns(3)
+    with wtw_c1:
+        WtW_HSFO  = float_text_input("HSFO WtW [g/MJ]" , _get(DEFAULTS, "WtW_HSFO" , 92.78),  key="WtW_HSFO",  min_value=0.0)
+    with wtw_c2:
+        WtW_LFO   = float_text_input("LFO WtW [g/MJ]"  , _get(DEFAULTS, "WtW_LFO"  , 92.00),  key="WtW_LFO",   min_value=0.0)
+    with wtw_c3:
+       WtW_MGO   = float_text_input("MGO WtW [g/MJ]"  , _get(DEFAULTS, "WtW_MGO"  , 93.93),  key="WtW_MGO",   min_value=0.0)
+    wtw_c4, wtw_c5 = st.columns(2)
+    with wtw_c4:
+       WtW_BIO   = float_text_input("BIO WtW [g/MJ]"  , _get(DEFAULTS, "WtW_BIO"  , 70.00),  key="WtW_BIO",   min_value=0.0)
+    with wtw_c5:
+       WtW_RFNBO = float_text_input("RFNBO WtW [g/MJ]", _get(DEFAULTS, "WtW_RFNBO", 20.00),  key="WtW_RFNBO", min_value=0.0)
     st.markdown("</div>", unsafe_allow_html=True)
+
 
     # 3) Market prices
     st.markdown('<div class="card"><h4>Market prices</h4>', unsafe_allow_html=True)
