@@ -339,6 +339,17 @@ with st.sidebar:
        WtW_RFNBO = float_text_input("RFNBO WtW [g/MJ]", _get(DEFAULTS, "WtW_RFNBO", 20.00),  key="WtW_RFNBO", min_value=0.0)
     st.markdown("</div>", unsafe_allow_html=True)
 
+    # 4) Other + Optimizer
+    st.markdown('<div class="card"><h4>Other settings</h4>', unsafe_allow_html=True)
+    consecutive_deficit_years_seed = int(st.number_input("Consecutive deficit years (seed)", min_value=1, value=int(_get(DEFAULTS, "consecutive_deficit_years", 1)), step=1))
+    opt_fuels = ["HSFO", "LFO", "MGO"]
+    try:
+        _idx = opt_fuels.index(_get(DEFAULTS, "opt_reduce_fuel", "HSFO"))
+    except ValueError:
+        _idx = 0
+    selected_fuel_for_opt = st.selectbox("Fuel to reduce (for optimization)", opt_fuels, index=_idx)
+    st.markdown("</div>", unsafe_allow_html=True)
+
     # 3) Market prices  (ALL in EUR)
     st.markdown('<div class="card"><h4>Market prices</h4>', unsafe_allow_html=True)
     credit_per_tco2e = float_text_input(
@@ -351,23 +362,15 @@ with st.sidebar:
         _get(DEFAULTS, "penalty_price_eur_per_vlsfo_t", 2_400.0),
         key="penalty_per_vlsfo_t_str", min_value=0.0
     )
+    bio_premium_label = f"Premium BIO vs {selected_fuel_for_opt} [EUR/ton]"
     bio_premium_eur_per_t = float_text_input(
-        "Premium BIO vs HSFO [EUR/ton]",
+        bio_premium_label,
         _get(DEFAULTS, "bio_premium_eur_per_t", _get(DEFAULTS, "bio_premium_usd_per_t", 0.0)),
         key="bio_premium_eur_per_t", min_value=0.0
     )
     st.markdown("</div>", unsafe_allow_html=True)
 
-    # 4) Other + Optimizer
-    st.markdown('<div class="card"><h4>Other settings</h4>', unsafe_allow_html=True)
-    consecutive_deficit_years_seed = int(st.number_input("Consecutive deficit years (seed)", min_value=1, value=int(_get(DEFAULTS, "consecutive_deficit_years", 1)), step=1))
-    opt_fuels = ["HSFO", "LFO", "MGO"]
-    try:
-        _idx = opt_fuels.index(_get(DEFAULTS, "opt_reduce_fuel", "HSFO"))
-    except ValueError:
-        _idx = 0
-    selected_fuel_for_opt = st.selectbox("Fuel to reduce (for optimization)", opt_fuels, index=_idx)
-    st.markdown("</div>", unsafe_allow_html=True)
+
 
     # 5) Banking & Pooling
     st.markdown('<div class="card"><h4>Banking & Pooling (tCO₂e)</h4>', unsafe_allow_html=True)
