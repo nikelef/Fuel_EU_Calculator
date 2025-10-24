@@ -510,7 +510,7 @@ def _stack_with_arrows(title: str, left_vals: Dict[str,float], right_vals: Dict[
                                  line=dict(dash="dot", width=2), hoverinfo="skip", showlegend=False))
         fig.add_annotation(x=categories[1], y=y_center_right, ax=categories[0], ay=y_center_left,
                            xref="x", yref="y", axref="x", ayref="y", text="", showarrow=True,
-                           arrowhead=3, arrowsize=1.2, arrowwidth=2, arrowcolor="rgba(0,0,0,0.65)"))
+                           arrowhead=3, arrowsize=1.2, arrowwidth=2, arrowcolor="rgba(0,0,0,0.65)")
         pct = (layer_right / layer_left * 100.0) if layer_left > 0 else 100.0
         pct = max(min(pct, 100.0), 0.0)
         y_mid = 0.5 * (y_center_left + y_center_right)
