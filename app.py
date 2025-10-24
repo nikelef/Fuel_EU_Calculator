@@ -596,8 +596,8 @@ with cH: st.metric("RFNBO — in scope", f"{us2(combined_scope['RFNBO'])} MJ")
 # Derived prices card (EUR)
 with st.sidebar:
     st.markdown('<div class="card"><h4>Derived prices</h4>', unsafe_allow_html=True)
-    st.text_input("Credit price €/VLSFO-eq t (derived)", value=us2(credit_per_tco2e * tco2e_per_vlsfo_t), disabled=True)
-    st.text_input("Penalty price €/tCO₂e (derived)", value=us2((penalty_price_eur_per_vlsfo_t / tco2e_per_vlsfo_t) if tco2e_per_vlsfo_t>0 else 0.0), disabled=True)
+    st.text_input("Credit price €/VLSFO-eq t (at current mix)", value=us2(credit_per_tco2e * tco2e_per_vlsfo_t), disabled=True)
+    st.text_input("Penalty price €/tCO₂e (at current mix)", value=us2((penalty_price_eur_per_vlsfo_t / tco2e_per_vlsfo_t) if tco2e_per_vlsfo_t>0 else 0.0), disabled=True)
     st.markdown("</div>", unsafe_allow_html=True)
 
 # Combined stacks from segment sums
