@@ -981,4 +981,4 @@ df_fmt = df_cost.copy()
 for col in df_fmt.columns:
     if col != "Year": df_fmt[col] = df_fmt[col].apply(us2)
 st.dataframe(df_fmt, use_container_width=True)
-st.download_button("Download per-year results (CSV, raw EUR)", data=df_cost.to_csv(index=False), file_name="fueleu_results_2025_2050_eur.csv", mime="text/csv")
+st.download_button("fueleu_voyage_segments_2025_2050_eur.csv", data=df_cost.to_csv(index=False), file_name="fueleu_results_2025_2050_eur.csv", mime="text/csv")
