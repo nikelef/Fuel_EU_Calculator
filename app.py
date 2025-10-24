@@ -722,15 +722,18 @@ for _, row in LIMITS_DF.iterrows():
     carry_in_list.append(carry)
     cb_eff_t.append(cb_eff)
 
-    # Pooling
+# Pooling (uptake only fills a deficit; provide only from surplus)
     if year >= int(st.session_state.get("pooling_start_year", _get(DEFAULTS,"pooling_start_year",YEARS[0]))):
-        pooling_tco2e_val = parse_us_any(st.session_state.get("POOL_T", _get(DEFAULTS,"pooling_tco2e",0.0)), 0.0)
-        if pooling_tco2e_val >= 0:
-            pool_use = pooling_tco2e_val
+       pooling_tco2e_val = parse_us_any(st.session_state.get("POOL_T", _get(DEFAULTS,"pooling_tco2e",0.0)), 0.0)
+       if pooling_tco2e_val >= 0:
+           # uptake: cap by current deficit (negative cb_eff)
+           pre_deficit = max(-cb_eff, 0.0)
+           pool_use = min(pooling_tco2e_val, pre_deficit)
         else:
-            provide_abs = abs(pooling_tco2e_val)
-            pre_surplus = max(cb_eff, 0.0)
-            pool_use = -min(provide_abs, pre_surplus)
+        # provide: cap by current surplus (positive cb_eff)
+           provide_abs = abs(pooling_tco2e_val)
+           pre_surplus = max(cb_eff, 0.0)
+           pool_use = -min(provide_abs, pre_surplus)
     else:
         pool_use = 0.0
 
@@ -843,14 +846,16 @@ def penalty_eur_with_masses_for_year(year_idx: int,
     CB_t_raw_x = CB_g_x / 1e6
     cb_eff_x = CB_t_raw_x + carry_in_list[year_idx]
 
-    # Pooling & banking (same as main loop)
     if YEARS[year_idx] >= int(pooling_start_year):
         if pooling_tco2e_input >= 0:
-            pool_use_x = pooling_tco2e_input
+        # uptake: cap by current deficit (negative cb_eff_x)
+           pre_deficit_x = max(-cb_eff_x, 0.0)
+           pool_use_x = min(pooling_tco2e_input, pre_deficit_x)
         else:
-            provide_abs = abs(pooling_tco2e_input)
-            pre_surplus = max(cb_eff_x, 0.0)
-            pool_use_x = -min(provide_abs, pre_surplus)
+        # provide: cap by current surplus (positive cb_eff_x)
+           provide_abs = abs(pooling_tco2e_input)
+           pre_surplus_x = max(cb_eff_x, 0.0)
+           pool_use_x = -min(provide_abs, pre_surplus_x)
     else:
         pool_use_x = 0.0
 
