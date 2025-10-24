@@ -15,16 +15,14 @@
 #   3) All original functionality kept: banking, pooling, optimizer (note: optimizer still evaluates with a pooled
 #      allocator approximation for candidate mixes; main results/plot use the combined per-segment in-scope sums).
 #
-# Notes:
-#   • Derived price fields are non-zero: use preview intensity with RFNBO×2 for €/VLSFO-eq t factor.
-#   • OPS lives ONLY in EU at-berth segments (kWh→MJ) and is 100% in-scope with WtW=0.
-#   • Stacks show arrows and % retained, fuels ordered by ascending WtW, original colors, MJ hover text.
+# Currency change (this version):
+#   • All prices, costs, and outputs are in EUR. Removed USD and FX.
+#   • Renamed *_USD columns/variables to *_EUR. Added bio_premium_eur_per_t input.
 
 from __future__ import annotations
 import json, os
 from typing import Dict, Any, Tuple, List
 
-import numpy as np
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
@@ -85,9 +83,12 @@ def compute_energy_MJ(mass_t: float, lcv_MJ_per_t: float) -> float:
     return mass_t * lcv
 
 def euros_from_tco2e(balance_tco2e_positive: float, g_attained: float, price_eur_per_vlsfo_t: float) -> float:
+    """
+    Convert a tCO2e amount into EUR using an equivalent VLSFO-tonne price and the attained intensity.
+    """
     if balance_tco2e_positive <= 0 or price_eur_per_vlsfo_t <= 0 or g_attained <= 0:
         return 0.0
-    tco2e_per_vlsfot = (g_attained * 41_000.0) / 1_000_000.0
+    tco2e_per_vlsfot = (g_attained * 41_000.0) / 1_000_000.0  # tCO2e per VLSFO-eq tonne at attained intensity
     if tco2e_per_vlsfot <= 0:
         return 0.0
     vlsfo_eq_t = balance_tco2e_positive / tco2e_per_vlsfot
@@ -338,13 +339,23 @@ with st.sidebar:
        WtW_RFNBO = float_text_input("RFNBO WtW [g/MJ]", _get(DEFAULTS, "WtW_RFNBO", 20.00),  key="WtW_RFNBO", min_value=0.0)
     st.markdown("</div>", unsafe_allow_html=True)
 
-
-    # 3) Market prices
+    # 3) Market prices  (ALL in EUR)
     st.markdown('<div class="card"><h4>Market prices</h4>', unsafe_allow_html=True)
-    eur_usd_fx = float_text_input("1 Euro = … USD", _get(DEFAULTS, "eur_usd_fx", 1.00), key="eur_usd_fx", min_value=0.0)
-    credit_per_tco2e = float_text_input("Credit price €/tCO₂e", _get(DEFAULTS, "credit_per_tco2e", 200.0), key="credit_per_tco2e_str", min_value=0.0)
-    penalty_price_eur_per_vlsfo_t = float_text_input("Penalty price €/VLSFO-eq t", _get(DEFAULTS, "penalty_price_eur_per_vlsfo_t", 2_400.0), key="penalty_per_vlsfo_t_str", min_value=0.0)
-    bio_premium_usd_per_t = float_text_input("Premium BIO vs HSFO [USD/ton]", _get(DEFAULTS, "bio_premium_usd_per_t", 0.0), key="bio_premium_usd_per_t", min_value=0.0)
+    credit_per_tco2e = float_text_input(
+        "Credit price €/tCO₂e",
+        _get(DEFAULTS, "credit_per_tco2e", 200.0),
+        key="credit_per_tco2e_str", min_value=0.0
+    )
+    penalty_price_eur_per_vlsfo_t = float_text_input(
+        "Penalty price €/VLSFO-eq t",
+        _get(DEFAULTS, "penalty_price_eur_per_vlsfo_t", 2_400.0),
+        key="penalty_per_vlsfo_t_str", min_value=0.0
+    )
+    bio_premium_eur_per_t = float_text_input(
+        "Premium BIO vs HSFO [EUR/ton]",
+        _get(DEFAULTS, "bio_premium_eur_per_t", _get(DEFAULTS, "bio_premium_usd_per_t", 0.0)),
+        key="bio_premium_eur_per_t", min_value=0.0
+    )
     st.markdown("</div>", unsafe_allow_html=True)
 
     # 4) Other + Optimizer
@@ -370,19 +381,21 @@ with st.sidebar:
     # 6) Save
     if st.button("💾 Save current inputs as defaults"):
         defaults_to_save = {
-            "eur_usd_fx": eur_usd_fx,
-            "bio_premium_usd_per_t": bio_premium_usd_per_t,
-            "LCV_HSFO": LCV_HSFO, "LCV_LFO": LCV_LFO, "LCV_MGO": LCV_MGO, "LCV_BIO": LCV_BIO, "LCV_RFNBO": LCV_RFNBO,
-            "WtW_HSFO": WtW_HSFO, "WtW_LFO": WtW_LFO, "WtW_MGO": WtW_MGO, "WtW_BIO": WtW_BIO, "WtW_RFNBO": WtW_RFNBO,
+            # Prices/settings (EUR-only)
             "credit_per_tco2e": credit_per_tco2e,
             "penalty_price_eur_per_vlsfo_t": penalty_price_eur_per_vlsfo_t,
-            "consecutive_deficit_years": consecutive_deficit_years_seed,
+            "bio_premium_eur_per_t": bio_premium_eur_per_t,
             "pooling_price_eur_per_tco2e": pooling_price_eur_per_tco2e,
             "banking_tco2e": banking_tco2e_input,
             "pooling_tco2e": pooling_tco2e_input,
             "pooling_start_year": int(pooling_start_year),
             "banking_start_year": int(banking_start_year),
+            "consecutive_deficit_years": consecutive_deficit_years_seed,
             "opt_reduce_fuel": selected_fuel_for_opt,
+            # Fuel props
+            "LCV_HSFO": LCV_HSFO, "LCV_LFO": LCV_LFO, "LCV_MGO": LCV_MGO, "LCV_BIO": LCV_BIO, "LCV_RFNBO": LCV_RFNBO,
+            "WtW_HSFO": WtW_HSFO, "WtW_LFO": WtW_LFO, "WtW_MGO": WtW_MGO, "WtW_BIO": WtW_BIO, "WtW_RFNBO": WtW_RFNBO,
+            # Segments
             "abs_segments": st.session_state.get("abs_segments", []),
         }
         try:
@@ -414,7 +427,7 @@ LCVs_now = {"HSFO": LCV_HSFO, "LFO": LCV_LFO, "MGO": LCV_MGO, "BIO": LCV_BIO, "R
 totals_mass, ops_kwh_total = _segments_totals_masses_and_ops()
 ELEC_MJ_input = ops_kwh_total * 3.6
 
-# Energies by buckets (for optimizer use)
+# Energies by buckets (for optimizer use; kept)
 energies_extra_voy = _masses_to_energies(totals_mass["extra_voy"], LCVs_now)
 energies_eu_berth  = _masses_to_energies(totals_mass["eu_berth"],  LCVs_now)
 energies_intra_voy = _masses_to_energies(totals_mass["intra_voy"], LCVs_now)
@@ -497,7 +510,7 @@ def _stack_with_arrows(title: str, left_vals: Dict[str,float], right_vals: Dict[
                                  line=dict(dash="dot", width=2), hoverinfo="skip", showlegend=False))
         fig.add_annotation(x=categories[1], y=y_center_right, ax=categories[0], ay=y_center_left,
                            xref="x", yref="y", axref="x", ayref="y", text="", showarrow=True,
-                           arrowhead=3, arrowsize=1.2, arrowwidth=2, arrowcolor="rgba(0,0,0,0.65)")
+                           arrowhead=3, arrowsize=1.2, arrowwidth=2, arrowcolor="rgba(0,0,0,0.65)"))
         pct = (layer_right / layer_left * 100.0) if layer_left > 0 else 100.0
         pct = max(min(pct, 100.0), 0.0)
         y_mid = 0.5 * (y_center_left + y_center_right)
@@ -580,7 +593,7 @@ with cF: st.metric("Fossil — in scope", f"{us2(combined_scope['HSFO']+combined
 with cG: st.metric("BIO — in scope", f"{us2(combined_scope['BIO'])} MJ")
 with cH: st.metric("RFNBO — in scope", f"{us2(combined_scope['RFNBO'])} MJ")
 
-# Derived prices card (after we have g_preview)
+# Derived prices card (EUR)
 with st.sidebar:
     st.markdown('<div class="card"><h4>Derived prices</h4>', unsafe_allow_html=True)
     st.text_input("Credit price €/VLSFO-eq t (derived)", value=us2(credit_per_tco2e * tco2e_per_vlsfo_t), disabled=True)
@@ -640,7 +653,7 @@ for key, label in stack_layers_global:
                                     line=dict(dash="dot", width=2), hoverinfo="skip", showlegend=False))
     fig_stacks.add_annotation(x=categories[1], y=y_center_right, ax=categories[0], ay=y_center_left,
                               xref="x", yref="y", axref="x", ayref="y", text="", showarrow=True,
-                              arrowhead=3, arrowsize=1.2, arrowwidth=2, arrowcolor="rgba(0,0,0,0.65)")
+                              arrowhead=3, arrowsize=1.2, arrowwidth=2, arrowcolor="rgba(0,0,0,0.65)"))
     pct = (layer_right / layer_left * 100.0) if layer_left > 0 else 100.0
     pct = max(min(pct, 100.0), 0.0)
     y_mid = 0.5 * (y_center_left + y_center_right)
@@ -692,10 +705,8 @@ st.header("Results (merged per-year table)")
 cb_raw_t, carry_in_list, cb_eff_t = [], [], []
 pool_applied, bank_applied = [], []
 final_balance_t, penalties_eur, credits_eur, g_att_list = [], [], [], []
-penalties_usd, credits_usd = [], []
 carry = 0.0
 fixed_multiplier_by_step = {}
-eur_usd_fx_val = parse_us_any(st.session_state.get("eur_usd_fx", _get(DEFAULTS,"eur_usd_fx",1.0)), 1.0)
 
 for _, row in LIMITS_DF.iterrows():
     year = int(row["Year"])
@@ -755,12 +766,11 @@ for _, row in LIMITS_DF.iterrows():
     else:
         mult = 1.0
 
-    # €
+    # EUR (no FX)
     penalty_vlsfo = parse_us_any(st.session_state.get("penalty_per_vlsfo_t_str", _get(DEFAULTS,"penalty_price_eur_per_vlsfo_t",2400.0)), 2400.0)
     credit_per_tco2e_val = parse_us_any(st.session_state.get("credit_per_tco2e_str", _get(DEFAULTS,"credit_per_tco2e",200.0)), 200.0)
-    factor_preview = (g_preview * 41_000.0) / 1_000_000.0
     if final_bal > 0:
-        credit_val = euros_from_tco2e(final_bal, g_att, credit_per_tco2e_val * factor_preview)
+        credit_val = final_bal * credit_per_tco2e_val
         penalty_val = 0.0
     elif final_bal < 0:
         penalty_val = euros_from_tco2e(-final_bal, g_att, penalty_vlsfo) * mult
@@ -771,19 +781,17 @@ for _, row in LIMITS_DF.iterrows():
     pool_applied.append(pool_use); bank_applied.append(bank_use)
     final_balance_t.append(final_bal)
     penalties_eur.append(penalty_val); credits_eur.append(credit_val)
-    penalties_usd.append(penalty_val * eur_usd_fx_val)
-    credits_usd.append(credit_val * eur_usd_fx_val)
 
-# BIO premium & pooling cost series (unchanged)
+# BIO premium & pooling cost series (EUR)
 bio_mass_total_t_base = (totals_mass["intra_voy"]["BIO"] + totals_mass["extra_voy"]["BIO"] + totals_mass["eu_berth"]["BIO"])
-bio_premium_usd_per_t_val = parse_us_any(st.session_state.get("bio_premium_usd_per_t", _get(DEFAULTS,"bio_premium_usd_per_t",0.0)), 0.0)
-bio_premium_cost_usd_col = [bio_mass_total_t_base * bio_premium_usd_per_t_val] * len(YEARS)
+bio_premium_eur_per_t_val = parse_us_any(st.session_state.get("bio_premium_eur_per_t", _get(DEFAULTS,"bio_premium_eur_per_t", _get(DEFAULTS,"bio_premium_usd_per_t",0.0))), 0.0)
+bio_premium_cost_eur_col = [bio_mass_total_t_base * bio_premium_eur_per_t_val] * len(YEARS)
 pooling_price_eur_per_tco2e_val = parse_us_any(st.session_state.get("pooling_price_eur_per_tco2e", _get(DEFAULTS,"pooling_price_eur_per_tco2e",200.0)), 200.0)
-pooling_cost_usd_col = [pool_applied[i] * pooling_price_eur_per_tco2e_val * eur_usd_fx_val for i in range(len(YEARS))]
-total_cost_usd_col = [penalties_usd[i] + bio_premium_cost_usd_col[i] + pooling_cost_usd_col[i] for i in range(len(YEARS))]
+pooling_cost_eur_col = [pool_applied[i] * pooling_price_eur_per_tco2e_val for i in range(len(YEARS))]
+total_cost_eur_col = [penalties_eur[i] + bio_premium_cost_eur_col[i] + pooling_cost_eur_col[i] for i in range(len(YEARS))]
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Optimizer utilities (kept as in prior version; uses pooled allocator approximation)
+# Optimizer utilities (kept; pooled allocator approximation)
 # ──────────────────────────────────────────────────────────────────────────────
 HSFO_voy_t = totals_mass["intra_voy"]["HSFO"] + totals_mass["extra_voy"]["HSFO"]
 LFO_voy_t  = totals_mass["intra_voy"]["LFO"]  + totals_mass["extra_voy"]["LFO"]
@@ -818,7 +826,7 @@ def scoped_and_intensity_from_masses(h_v, l_v, m_v, b_v, r_v, h_b, l_b, m_b, b_b
     E_rfnbo_scope_x = scoped_x.get("RFNBO", 0.0)
     return E_scope_x, num_phys_x, E_rfnbo_scope_x
 
-def penalty_usd_with_masses_for_year(year_idx: int,
+def penalty_eur_with_masses_for_year(year_idx: int,
                                      h_v, l_v, m_v, b_v, r_v,
                                      h_b, l_b, m_b, b_b, r_b) -> Tuple[float, float]:
     year = YEARS[year_idx]
@@ -835,6 +843,7 @@ def penalty_usd_with_masses_for_year(year_idx: int,
     CB_t_raw_x = CB_g_x / 1e6
     cb_eff_x = CB_t_raw_x + carry_in_list[year_idx]
 
+    # Pooling & banking (same as main loop)
     if YEARS[year_idx] >= int(pooling_start_year):
         if pooling_tco2e_input >= 0:
             pool_use_x = pooling_tco2e_input
@@ -855,12 +864,9 @@ def penalty_usd_with_masses_for_year(year_idx: int,
     final_bal_x = cb_eff_x + pool_use_x - bank_use_x
     if final_bal_x < 0:
         needed = -final_bal_x
-        trim_bank = min(needed, bank_use_x)
-        bank_use_x -= trim_bank
-        needed -= trim_bank
+        trim_bank = min(needed, bank_use_x); bank_use_x -= trim_bank; needed -= trim_bank
         if needed > 0 and pool_use_x < 0:
             pool_use_x += needed
-            needed = 0.0
         final_bal_x = cb_eff_x + pool_use_x - bank_use_x
 
     if final_bal_x < 0:
@@ -868,10 +874,9 @@ def penalty_usd_with_masses_for_year(year_idx: int,
         start_count = max(int(consecutive_deficit_years_seed), 1)
         step_mult = 1.0 + (start_count - 1) * 0.10
         penalty_eur_x = euros_from_tco2e(-final_bal_x, g_att_x, penalty_price_eur_per_vlsfo_t) * step_mult
-        penalty_usd_x = penalty_eur_x * eur_usd_fx_val
     else:
-        penalty_usd_x = 0.0
-    return penalty_usd_x, g_att_x
+        penalty_eur_x = 0.0
+    return penalty_eur_x, g_att_x
 
 def masses_after_shift_generic(fuel: str, x_decrease_t: float) -> Tuple[float,float,float,float,float,float,float,float,float,float]:
     h_v, l_v, m_v, b_v, r_v = HSFO_voy_t, LFO_voy_t, MGO_voy_t, BIO_voy_t, RFNBO_voy_t
@@ -903,66 +908,72 @@ for i in range(len(YEARS)):
     for s in range(steps_coarse + 1):
         x = x_max * s / steps_coarse
         masses = masses_after_shift_generic(selected_fuel_for_opt, x)
-        penalty_usd_x, _ = penalty_usd_with_masses_for_year(i, *masses)
+        penalty_eur_x, _ = penalty_eur_with_masses_for_year(i, *masses)
         new_bio_total_t = (masses[3] + masses[8])  # b_v + b_b
-        total_cost_x = penalty_usd_x + new_bio_total_t * bio_premium_usd_per_t_val
+        total_cost_x = penalty_eur_x + new_bio_total_t * bio_premium_eur_per_t_val
         if total_cost_x < best_cost: best_cost, best_x = total_cost_x, x
     delta = x_max / steps_coarse * 2.0
     left, right, steps_fine = max(0.0, best_x - delta), min(x_max, best_x + delta), 80
     for s in range(steps_fine + 1):
         x = left + (right - left) * s / steps_fine
         masses = masses_after_shift_generic(selected_fuel_for_opt, x)
-        penalty_usd_x, _ = penalty_usd_with_masses_for_year(i, *masses)
+        penalty_eur_x, _ = penalty_eur_with_masses_for_year(i, *masses)
         new_bio_total_t = (masses[3] + masses[8])
-        total_cost_x = penalty_usd_x + new_bio_total_t * bio_premium_usd_per_t_val
+        total_cost_x = penalty_eur_x + new_bio_total_t * bio_premium_eur_per_t_val
         if total_cost_x < best_cost: best_cost, best_x = total_cost_x, x
     dec_opt = best_x
     bio_inc_opt = dec_opt * (LCV_SEL / LCV_BIO) if LCV_BIO > 0 else 0.0
     dec_opt_list.append(dec_opt); bio_inc_opt_list.append(bio_inc_opt)
 
-# Recompute optimized cost columns (penalty under pooled approximation)
-penalties_usd_opt_col, bio_premium_cost_usd_opt_col, total_cost_usd_opt_col = [], [], []
+# Recompute optimized cost columns (EUR)
+penalties_eur_opt_col, bio_premium_cost_eur_opt_col, total_cost_eur_opt_col = [], [], []
 for i in range(len(YEARS)):
     x_opt = dec_opt_list[i]
     if x_opt <= 0.0 or LCV_BIO <= 0.0:
-        penalties_usd_opt = penalties_usd[i]
-        bio_premium_usd_opt = bio_premium_cost_usd_col[i]
+        penalties_eur_opt = penalties_eur[i]
+        bio_premium_eur_opt = bio_premium_cost_eur_col[i]
     else:
         masses_opt = masses_after_shift_generic(selected_fuel_for_opt, x_opt)
-        penalties_usd_opt, _ = penalty_usd_with_masses_for_year(i, *masses_opt)
+        penalties_eur_opt, _ = penalty_eur_with_masses_for_year(i, *masses_opt)
         new_bio_total_t_opt = (masses_opt[3] + masses_opt[8])
-        bio_premium_usd_opt = new_bio_total_t_opt * bio_premium_usd_per_t_val
-    penalties_usd_opt_col.append(penalties_usd_opt)
-    bio_premium_cost_usd_opt_col.append(bio_premium_usd_opt)
-    total_cost_usd_opt_col.append(penalties_usd_opt + bio_premium_usd_opt + pooling_cost_usd_col[i])
+        bio_premium_eur_opt = new_bio_total_t_opt * bio_premium_eur_per_t_val
+    penalties_eur_opt_col.append(penalties_eur_opt)
+    bio_premium_cost_eur_opt_col.append(bio_premium_eur_opt)
+    total_cost_eur_opt_col.append(penalties_eur_opt + bio_premium_eur_opt + pooling_cost_eur_col[i])
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Table
 # ──────────────────────────────────────────────────────────────────────────────
 decrease_col_name = f"{selected_fuel_for_opt}_decrease(t)_for_Opt_Cost"
+emissions_tco2e = num_phys / 1e6  # physical emissions for the in-scope mix (no RFNBO reward)
+
 df_cost = pd.DataFrame({
     "Year": YEARS,
     "Reduction_%": LIMITS_DF["Reduction_%"].tolist(),
     "Limit_gCO2e_per_MJ": LIMITS_DF["Limit_gCO2e_per_MJ"].tolist(),
     "Actual_gCO2e_per_MJ": [attained_intensity_for_year(y) for y in YEARS],
-    "Emissions_tCO2e": [ ( (num_phys/ (den_phys if den_phys>0 else 1.0)) * E_scope_MJ) / 1e6 ]*len(YEARS),
+    "Emissions_tCO2e": [emissions_tco2e]*len(YEARS),
+
     "Compliance_Balance_tCO2e": cb_raw_t,
     "CarryIn_Banked_tCO2e": carry_in_list,
     "Effective_Balance_tCO2e": cb_eff_t,
     "Banked_to_Next_Year_tCO2e": bank_applied,
     "Pooling_tCO2e_Applied": pool_applied,
     "Final_Balance_tCO2e": final_balance_t,
-    "Pooling_Cost_USD": pooling_cost_usd_col,
-    "Penalty_USD": penalties_usd,
-    "Credit_USD": credits_usd,
-    "BIO Premium Cost_USD": [ bio_mass_total_t_base * bio_premium_usd_per_t_val ] * len(YEARS),
-    "Total_Cost_USD": total_cost_usd_col,
+
+    "Pooling_Cost_EUR": pooling_cost_eur_col,
+    "Penalty_EUR": penalties_eur,
+    "Credit_EUR": credits_eur,
+    "BIO Premium Cost_EUR": bio_premium_cost_eur_col,
+    "Total_Cost_EUR": total_cost_eur_col,
+
     decrease_col_name: dec_opt_list,
     "BIO_Increase(t)_For_Opt_Cost": bio_inc_opt_list,
-    "Total_Cost_USD_Opt": total_cost_usd_opt_col,
+    "Total_Cost_EUR_Opt": total_cost_eur_opt_col,
 })
+
 df_fmt = df_cost.copy()
 for col in df_fmt.columns:
     if col != "Year": df_fmt[col] = df_fmt[col].apply(us2)
 st.dataframe(df_fmt, use_container_width=True)
-st.download_button("Download per-year results (CSV)", data=df_fmt.to_csv(index=False), file_name="fueleu_results_2025_2050.csv", mime="text/csv")
+st.download_button("Download per-year results (CSV, raw EUR)", data=df_cost.to_csv(index=False), file_name="fueleu_results_2025_2050_eur.csv", mime="text/csv")
