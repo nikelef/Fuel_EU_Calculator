@@ -832,15 +832,17 @@ def scoped_and_intensity_from_masses(h_v, l_v, m_v, b_v, r_v, h_b, l_b, m_b, b_b
     E_rfnbo_scope_x = scoped_x.get("RFNBO", 0.0)
     return E_scope_x, num_phys_x, E_rfnbo_scope_x
 
+# ---- OPTIMIZER CHANGE 1: expand return values to include final balance and pooling used
 def penalty_eur_with_masses_for_year(year_idx: int,
                                      h_v, l_v, m_v, b_v, r_v,
-                                     h_b, l_b, m_b, b_b, r_b) -> Tuple[float, float]:
+                                     h_b, l_b, m_b, b_b, r_b) -> Tuple[float, float, float, float]:
     year = YEARS[year_idx]
     g_target = LIMITS_DF["Limit_gCO2e_per_MJ"].iloc[year_idx]
     E_scope_x, num_phys_x, E_rfnbo_scope_x = scoped_and_intensity_from_masses(
         h_v, l_v, m_v, b_v, r_v, h_b, l_b, m_b, b_b, r_b, ELEC_MJ, wtw, year
     )
-    if E_scope_x <= 0: return 0.0, 0.0
+    if E_scope_x <= 0: 
+        return 0.0, 0.0, 0.0, 0.0
     r = 2.0 if year <= 2033 else 1.0
     den_rwd_x = E_scope_x + (r - 1.0) * E_rfnbo_scope_x
     g_att_x = (num_phys_x / den_rwd_x) if den_rwd_x > 0 else 0.0
@@ -884,7 +886,8 @@ def penalty_eur_with_masses_for_year(year_idx: int,
         penalty_eur_x = euros_from_tco2e(-final_bal_x, g_att_x, penalty_price_eur_per_vlsfo_t) * step_mult
     else:
         penalty_eur_x = 0.0
-    return penalty_eur_x, g_att_x
+    # return: penalty, attained, final balance (tCO2e), pooling applied (tCO2e)
+    return penalty_eur_x, g_att_x, final_bal_x, pool_use_x
 
 def masses_after_shift_generic(fuel: str, x_decrease_t: float) -> Tuple[float,float,float,float,float,float,float,float,float,float]:
     h_v, l_v, m_v, b_v, r_v = HSFO_voy_t, LFO_voy_t, MGO_voy_t, BIO_voy_t, RFNBO_voy_t
@@ -905,6 +908,9 @@ def masses_after_shift_generic(fuel: str, x_decrease_t: float) -> Tuple[float,fl
     return h_v, l_v, m_v, b_v, r_v, h_b, l_b, m_b, b_b, r_b
 
 # Optimizer search (coarse + fine)
+# ---- OPTIMIZER CHANGE 2: include credits and pooling cost in candidate evaluation
+credit_per_tco2e_val_opt = parse_us_any(st.session_state.get("credit_per_tco2e_str", _get(DEFAULTS,"credit_per_tco2e",200.0)), 200.0)
+
 dec_opt_list, bio_inc_opt_list = [], []
 for i in range(len(YEARS)):
     if selected_fuel_for_opt == "HSFO": total_avail, LCV_SEL = HSFO_voy_t + HSFO_berth_t, LCV_HSFO
@@ -916,38 +922,51 @@ for i in range(len(YEARS)):
     for s in range(steps_coarse + 1):
         x = x_max * s / steps_coarse
         masses = masses_after_shift_generic(selected_fuel_for_opt, x)
-        penalty_eur_x, _ = penalty_eur_with_masses_for_year(i, *masses)
+        penalty_eur_x, _, final_bal_x, pool_use_x = penalty_eur_with_masses_for_year(i, *masses)
+        credits_eur_x = max(final_bal_x, 0.0) * credit_per_tco2e_val_opt
+        pooling_cost_x = pool_use_x * pooling_price_eur_per_tco2e_val
         new_bio_total_t = (masses[3] + masses[8])  # b_v + b_b
-        total_cost_x = penalty_eur_x + new_bio_total_t * bio_premium_eur_per_t_val
+        total_cost_x = penalty_eur_x - credits_eur_x + new_bio_total_t * bio_premium_eur_per_t_val + pooling_cost_x
         if total_cost_x < best_cost: best_cost, best_x = total_cost_x, x
     delta = x_max / steps_coarse * 2.0
     left, right, steps_fine = max(0.0, best_x - delta), min(x_max, best_x + delta), 80
     for s in range(steps_fine + 1):
         x = left + (right - left) * s / steps_fine
         masses = masses_after_shift_generic(selected_fuel_for_opt, x)
-        penalty_eur_x, _ = penalty_eur_with_masses_for_year(i, *masses)
+        penalty_eur_x, _, final_bal_x, pool_use_x = penalty_eur_with_masses_for_year(i, *masses)
+        credits_eur_x = max(final_bal_x, 0.0) * credit_per_tco2e_val_opt
+        pooling_cost_x = pool_use_x * pooling_price_eur_per_tco2e_val
         new_bio_total_t = (masses[3] + masses[8])
-        total_cost_x = penalty_eur_x + new_bio_total_t * bio_premium_eur_per_t_val
+        total_cost_x = penalty_eur_x - credits_eur_x + new_bio_total_t * bio_premium_eur_per_t_val + pooling_cost_x
         if total_cost_x < best_cost: best_cost, best_x = total_cost_x, x
     dec_opt = best_x
     bio_inc_opt = dec_opt * (LCV_SEL / LCV_BIO) if LCV_BIO > 0 else 0.0
     dec_opt_list.append(dec_opt); bio_inc_opt_list.append(bio_inc_opt)
 
 # Recompute optimized cost columns (EUR)
+# ---- OPTIMIZER CHANGE 3: subtract credits; pooling cost from candidate, not base
 penalties_eur_opt_col, bio_premium_cost_eur_opt_col, total_cost_eur_opt_col = [], [], []
 for i in range(len(YEARS)):
     x_opt = dec_opt_list[i]
     if x_opt <= 0.0 or LCV_BIO <= 0.0:
         penalties_eur_opt = penalties_eur[i]
         bio_premium_eur_opt = bio_premium_cost_eur_col[i]
+        credits_eur_opt = credits_eur[i]
+        pooling_cost_eur_opt = pooling_cost_eur_col[i]
+        penalties_eur_opt_col.append(penalties_eur_opt)
+        bio_premium_cost_eur_opt_col.append(bio_premium_eur_opt)
+        total_cost_eur_opt_col.append(penalties_eur_opt - credits_eur_opt + bio_premium_eur_opt + pooling_cost_eur_opt)
     else:
         masses_opt = masses_after_shift_generic(selected_fuel_for_opt, x_opt)
-        penalties_eur_opt, _ = penalty_eur_with_masses_for_year(i, *masses_opt)
+        penalties_eur_opt, _, final_bal_x, pool_use_x = penalty_eur_with_masses_for_year(i, *masses_opt)
         new_bio_total_t_opt = (masses_opt[3] + masses_opt[8])
         bio_premium_eur_opt = new_bio_total_t_opt * bio_premium_eur_per_t_val
-    penalties_eur_opt_col.append(penalties_eur_opt)
-    bio_premium_cost_eur_opt_col.append(bio_premium_eur_opt)
-    total_cost_eur_opt_col.append(penalties_eur_opt + bio_premium_eur_opt + pooling_cost_eur_col[i])
+        credits_eur_opt = max(final_bal_x, 0.0) * credit_per_tco2e_val_opt
+        pooling_cost_eur_opt = pool_use_x * pooling_price_eur_per_tco2e_val
+
+        penalties_eur_opt_col.append(penalties_eur_opt)
+        bio_premium_cost_eur_opt_col.append(bio_premium_eur_opt)
+        total_cost_eur_opt_col.append(penalties_eur_opt - credits_eur_opt + bio_premium_eur_opt + pooling_cost_eur_opt)
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Table
