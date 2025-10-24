@@ -243,8 +243,8 @@ def _masses_to_energies(masses: Dict[str, float], LCVs: Dict[str, float]) -> Dic
 # ──────────────────────────────────────────────────────────────────────────────
 # UI
 # ──────────────────────────────────────────────────────────────────────────────
-st.set_page_config(page_title="FuelEU Maritime — ABS Segments", layout="wide")
-st.title("FuelEU Maritime — ABS Segments — GHG Intensity & Cost")
+st.set_page_config(page_title="FuelEU Maritime — Voyage Segments", layout="wide")
+st.title("FuelEU Maritime — Voyage Segments — GHG Intensity & Cost")
 st.caption("2025–2050 • Limits from 2020 baseline 91.16 gCO₂e/MJ • WtW • Prices in EUR")
 
 # Sidebar CSS (compact), top metric smaller value text
