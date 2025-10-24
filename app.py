@@ -327,16 +327,16 @@ with st.sidebar:
     st.markdown("**Well-to-Wake (WtW) intensities** [gCO₂e/MJ]")
     wtw_c1, wtw_c2, wtw_c3 = st.columns(3)
     with wtw_c1:
-        WtW_HSFO  = float_text_input("HSFO WtW [g/MJ]" , _get(DEFAULTS, "WtW_HSFO" , 92.78),  key="WtW_HSFO",  min_value=0.0)
+        WtW_HSFO  = float_text_input("HSFO WtW" , _get(DEFAULTS, "WtW_HSFO" , 92.78),  key="WtW_HSFO",  min_value=0.0)
     with wtw_c2:
-        WtW_LFO   = float_text_input("LFO WtW [g/MJ]"  , _get(DEFAULTS, "WtW_LFO"  , 92.00),  key="WtW_LFO",   min_value=0.0)
+        WtW_LFO   = float_text_input("LFO WtW"  , _get(DEFAULTS, "WtW_LFO"  , 92.00),  key="WtW_LFO",   min_value=0.0)
     with wtw_c3:
-       WtW_MGO   = float_text_input("MGO WtW [g/MJ]"  , _get(DEFAULTS, "WtW_MGO"  , 93.93),  key="WtW_MGO",   min_value=0.0)
+       WtW_MGO   = float_text_input("MGO WtW"  , _get(DEFAULTS, "WtW_MGO"  , 93.93),  key="WtW_MGO",   min_value=0.0)
     wtw_c4, wtw_c5 = st.columns(2)
     with wtw_c4:
-       WtW_BIO   = float_text_input("BIO WtW [g/MJ]"  , _get(DEFAULTS, "WtW_BIO"  , 70.00),  key="WtW_BIO",   min_value=0.0)
+       WtW_BIO   = float_text_input("BIO WtW"  , _get(DEFAULTS, "WtW_BIO"  , 70.00),  key="WtW_BIO",   min_value=0.0)
     with wtw_c5:
-       WtW_RFNBO = float_text_input("RFNBO WtW [g/MJ]", _get(DEFAULTS, "WtW_RFNBO", 20.00),  key="WtW_RFNBO", min_value=0.0)
+       WtW_RFNBO = float_text_input("RFNBO WtW", _get(DEFAULTS, "WtW_RFNBO", 20.00),  key="WtW_RFNBO", min_value=0.0)
     st.markdown("</div>", unsafe_allow_html=True)
 
     # 4) Other + Optimizer
