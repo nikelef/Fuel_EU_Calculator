@@ -311,10 +311,12 @@ with st.sidebar:
         WtW_HSFO = float_text_input("HSFO WtW [g/MJ]", _get(DEFAULTS, "WtW_HSFO", 92.78),    key="WtW_HSFO", min_value=0.0)
         WtW_MGO  = float_text_input("MGO WtW [g/MJ]" , _get(DEFAULTS, "WtW_MGO" , 93.93),    key="WtW_MGO",  min_value=0.0)
     with l2:
-        LCV_LFO  = float_text_input("LFO LCV [MJ/t]" , _get(DEFAULTS, "LCV_LFO" , 42_700.0), key="LCV_LFO", min_value=0.0)
-        LCV_BIO  = float_text_input("BIO LCV [MJ/t]" , _get(DEFAULTS, "LCV_BIO" , 38_000.0), key="LCV_BIO", min_value=0.0)
-        WtW_LFO  = float_text_input("LFO WtW [g/MJ]" , _get(DEFAULTS, "WtW_LFO" , 92.00),    key="WtW_LFO",  min_value=0.0)
-        WtW_RFNBO= float_text_input("RFNBO WtW [g/MJ]",_get(DEFAULTS, "WtW_RFNBO",20.00),    key="WtW_RFNBO",min_value=0.0)
+        LCV_LFO   = float_text_input("LFO LCV [MJ/t]"  , _get(DEFAULTS, "LCV_LFO" , 42_700.0), key="LCV_LFO", min_value=0.0)
+        LCV_BIO   = float_text_input("BIO LCV [MJ/t]"  , _get(DEFAULTS, "LCV_BIO" , 38_000.0), key="LCV_BIO", min_value=0.0)
+        LCV_RFNBO = float_text_input("RFNBO LCV [MJ/t]", _get(DEFAULTS, "LCV_RFNBO", 30_000.0), key="LCV_RFNBO", min_value=0.0)
+        WtW_LFO   = float_text_input("LFO WtW [g/MJ]"  , _get(DEFAULTS, "WtW_LFO" , 92.00),     key="WtW_LFO",  min_value=0.0)
+        WtW_RFNBO = float_text_input("RFNBO WtW [g/MJ]", _get(DEFAULTS, "WtW_RFNBO", 20.00),    key="WtW_RFNBO",min_value=0.0)
+        WtW_BIO   = float_text_input("BIO WtW [g/MJ]"  , _get(DEFAULTS, "WtW_BIO" , 70.00),     key="WtW_BIO",  min_value=0.0)
     st.markdown("</div>", unsafe_allow_html=True)
 
     # 3) Market prices
