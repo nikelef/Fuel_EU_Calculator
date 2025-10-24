@@ -730,7 +730,7 @@ for _, row in LIMITS_DF.iterrows():
            pre_deficit = max(-cb_eff, 0.0)
            pool_use = min(pooling_tco2e_val, pre_deficit)
         else:
-        # provide: cap by current surplus (positive cb_eff)
+           # provide: cap by current surplus (positive cb_eff)
            provide_abs = abs(pooling_tco2e_val)
            pre_surplus = max(cb_eff, 0.0)
            pool_use = -min(provide_abs, pre_surplus)
