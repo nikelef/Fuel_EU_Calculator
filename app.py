@@ -788,7 +788,7 @@ bio_premium_eur_per_t_val = parse_us_any(st.session_state.get("bio_premium_eur_p
 bio_premium_cost_eur_col = [bio_mass_total_t_base * bio_premium_eur_per_t_val] * len(YEARS)
 pooling_price_eur_per_tco2e_val = parse_us_any(st.session_state.get("pooling_price_eur_per_tco2e", _get(DEFAULTS,"pooling_price_eur_per_tco2e",200.0)), 200.0)
 pooling_cost_eur_col = [pool_applied[i] * pooling_price_eur_per_tco2e_val for i in range(len(YEARS))]
-total_cost_eur_col = [penalties_eur[i] + bio_premium_cost_eur_col[i] + pooling_cost_eur_col[i] for i in range(len(YEARS))]
+net_total_cost_eur_col = [penalties_eur[i] - credits_eur[i] + bio_premium_cost_eur_col[i] + pooling_cost_eur_col[i] for i in range(len(YEARS))]
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Optimizer utilities (kept; pooled allocator approximation)
@@ -965,7 +965,7 @@ df_cost = pd.DataFrame({
     "Penalty_EUR": penalties_eur,
     "Credit_EUR": credits_eur,
     "BIO Premium Cost_EUR": bio_premium_cost_eur_col,
-    "Total_Cost_EUR": total_cost_eur_col,
+    "Net_Total_Cost_EUR": net_total_cost_eur_col,
 
     decrease_col_name: dec_opt_list,
     "BIO_Increase(t)_For_Opt_Cost": bio_inc_opt_list,
