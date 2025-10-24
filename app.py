@@ -1,4 +1,4 @@
-# app.py — FuelEU Maritime Calculator (ABS segments, prioritized per cross-border segments, pooled final from segment sums)
+# app.py — FuelEU Maritime Calculator (with voyage segments, prioritized per cross-border segments, pooled final from segment sums)
 # Updates per request (2025-10-23):
 #   1) Per-segment toggle “Apply prioritized allocation” now applies to ALL fuels (RFNBO, BIO, HSFO, LFO, MGO)
 #      by ascending WtW for the two cross-border types: "EU→non-EU voyage" and "non-EU→EU voyage".
@@ -135,7 +135,7 @@ def scoped_energies_extra_eu(energies_fuel_voyage: Dict[str, float],
                              elec_MJ: float,
                              wtw: Dict[str, float]) -> Dict[str, float]:
     """
-    (Kept for optimizer evaluation) ABS-style pooled allocator with berth-100% guarantee:
+    (Kept for optimizer evaluation)  pooled allocator with berth-100% guarantee:
       • Pool = 100% berth + 50% of total voyage (fuels only). ELEC always 100%.
       • Fill by WtW priority: renewables first (berth→voy up to spare after reserving berth fossils),
         then 100% fossil berth, then 50% fossil voyage.
@@ -197,7 +197,7 @@ def prioritized_half_scope_all_fuels(energies_voy: Dict[str, float],
     return result
 
 # ──────────────────────────────────────────────────────────────────────────────
-# ABS-style segments
+# Segments
 # ──────────────────────────────────────────────────────────────────────────────
 SEG_TYPES = [
     "Intra-EU voyage",
