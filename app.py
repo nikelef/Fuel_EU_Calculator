@@ -911,37 +911,142 @@ def masses_after_shift_generic(fuel: str, x_decrease_t: float) -> Tuple[float,fl
 # ---- OPTIMIZER CHANGE 2: include credits and pooling cost in candidate evaluation
 credit_per_tco2e_val_opt = parse_us_any(st.session_state.get("credit_per_tco2e_str", _get(DEFAULTS,"credit_per_tco2e",200.0)), 200.0)
 
+# Optimizer search — finer: dense grid + golden-section, and full cost (penalty − credits + pooling + bio premium)
+credit_per_tco2e_val_opt = parse_us_any(
+    st.session_state.get("credit_per_tco2e_str", _get(DEFAULTS, "credit_per_tco2e", 200.0)), 200.0
+)
+penalty_vlsfo_opt = parse_us_any(
+    st.session_state.get("penalty_per_vlsfo_t_str", _get(DEFAULTS, "penalty_price_eur_per_vlsfo_t", 2400.0)), 2400.0
+)
+
 dec_opt_list, bio_inc_opt_list = [], []
 for i in range(len(YEARS)):
-    if selected_fuel_for_opt == "HSFO": total_avail, LCV_SEL = HSFO_voy_t + HSFO_berth_t, LCV_HSFO
-    elif selected_fuel_for_opt == "LFO": total_avail, LCV_SEL = LFO_voy_t + LFO_berth_t, LCV_LFO
-    else:                                 total_avail, LCV_SEL = MGO_voy_t + MGO_berth_t, LCV_MGO
-    if total_avail <= 0 or LCV_BIO <= 0: dec_opt_list.append(0.0); bio_inc_opt_list.append(0.0); continue
-    steps_coarse, x_max = 60, total_avail
+    if selected_fuel_for_opt == "HSFO":
+        total_avail, LCV_SEL = HSFO_voy_t + HSFO_berth_t, LCV_HSFO
+    elif selected_fuel_for_opt == "LFO":
+        total_avail, LCV_SEL = LFO_voy_t + LFO_berth_t, LCV_LFO
+    else:
+        total_avail, LCV_SEL = MGO_voy_t + MGO_berth_t, LCV_MGO
+
+    x_max = total_avail
+    if x_max <= 0 or LCV_BIO <= 0:
+        dec_opt_list.append(0.0)
+        bio_inc_opt_list.append(0.0)
+        continue
+
+    def _total_cost_for_x(x: float) -> float:
+        # 1) masses after shifting selected fossil → BIO (energy-equivalent)
+        masses = masses_after_shift_generic(selected_fuel_for_opt, x)
+
+        # 2) compute scope, numerators (same as helper), then g_att_x
+        E_scope_x, num_phys_x, E_rfnbo_scope_x = scoped_and_intensity_from_masses(
+            *masses, ELEC_MJ, wtw, YEARS[i]
+        )
+        if E_scope_x <= 0:
+            return 0.0  # no energy → no cost
+
+        r = 2.0 if YEARS[i] <= 2033 else 1.0
+        den_rwd_x = E_scope_x + (r - 1.0) * E_rfnbo_scope_x
+        g_att_x = (num_phys_x / den_rwd_x) if den_rwd_x > 0 else 0.0
+
+        # 3) compliance balance for this candidate
+        g_target = LIMITS_DF["Limit_gCO2e_per_MJ"].iloc[i]
+        CB_g_x = (g_target - g_att_x) * E_scope_x
+        CB_t_raw_x = CB_g_x / 1e6
+        cb_eff_x = CB_t_raw_x + carry_in_list[i]
+
+        # 4) pooling (cap: uptake by deficit, provide by surplus)
+        if YEARS[i] >= int(pooling_start_year):
+            if pooling_tco2e_input >= 0:
+                pre_deficit_x = max(-cb_eff_x, 0.0)
+                pool_use_x = min(pooling_tco2e_input, pre_deficit_x)
+            else:
+                provide_abs = abs(pooling_tco2e_input)
+                pre_surplus_x = max(cb_eff_x, 0.0)
+                pool_use_x = -min(provide_abs, pre_surplus_x)
+        else:
+            pool_use_x = 0.0
+
+        # 5) banking (cap by current surplus)
+        if YEARS[i] >= int(banking_start_year):
+            pre_surplus = max(cb_eff_x, 0.0)
+            requested_bank = max(banking_tco2e_input, 0.0)
+            bank_use_x = min(requested_bank, pre_surplus)
+        else:
+            bank_use_x = 0.0
+
+        # 6) safety clamp (cannot end negative if bank/provide were over-applied)
+        final_bal_x = cb_eff_x + pool_use_x - bank_use_x
+        if final_bal_x < 0:
+            needed = -final_bal_x
+            trim_bank = min(needed, bank_use_x)
+            bank_use_x -= trim_bank
+            needed -= trim_bank
+            if needed > 0 and pool_use_x < 0:
+                pool_use_x += needed
+            final_bal_x = cb_eff_x + pool_use_x - bank_use_x
+
+        # 7) penalty / credit
+        if final_bal_x < 0:
+            step_idx = _step_of_year(YEARS[i])
+            start_count = max(int(consecutive_deficit_years_seed), 1)
+            step_mult = 1.0 + (start_count - 1) * 0.10
+            penalty_eur_x = euros_from_tco2e(-final_bal_x, g_att_x, penalty_vlsfo_opt) * step_mult
+            credits_eur_x = 0.0
+        else:
+            penalty_eur_x = 0.0
+            credits_eur_x = final_bal_x * credit_per_tco2e_val_opt
+
+        # 8) pooling & bio premium costs
+        pooling_cost_x = pool_use_x * pooling_price_eur_per_tco2e_val
+        new_bio_total_t = (masses[3] + masses[8])  # b_v + b_b
+
+        # 9) total cost objective (match Net_Total_Cost logic)
+        return penalty_eur_x - credits_eur_x + new_bio_total_t * bio_premium_eur_per_t_val + pooling_cost_x
+
+    # A) dense coarse scan to bracket minimum
+    steps_coarse = 200
     best_x, best_cost = 0.0, float("inf")
     for s in range(steps_coarse + 1):
         x = x_max * s / steps_coarse
-        masses = masses_after_shift_generic(selected_fuel_for_opt, x)
-        penalty_eur_x, _, final_bal_x, pool_use_x = penalty_eur_with_masses_for_year(i, *masses)
-        credits_eur_x = max(final_bal_x, 0.0) * credit_per_tco2e_val_opt
-        pooling_cost_x = pool_use_x * pooling_price_eur_per_tco2e_val
-        new_bio_total_t = (masses[3] + masses[8])  # b_v + b_b
-        total_cost_x = penalty_eur_x - credits_eur_x + new_bio_total_t * bio_premium_eur_per_t_val + pooling_cost_x
-        if total_cost_x < best_cost: best_cost, best_x = total_cost_x, x
-    delta = x_max / steps_coarse * 2.0
-    left, right, steps_fine = max(0.0, best_x - delta), min(x_max, best_x + delta), 80
-    for s in range(steps_fine + 1):
-        x = left + (right - left) * s / steps_fine
-        masses = masses_after_shift_generic(selected_fuel_for_opt, x)
-        penalty_eur_x, _, final_bal_x, pool_use_x = penalty_eur_with_masses_for_year(i, *masses)
-        credits_eur_x = max(final_bal_x, 0.0) * credit_per_tco2e_val_opt
-        pooling_cost_x = pool_use_x * pooling_price_eur_per_tco2e_val
-        new_bio_total_t = (masses[3] + masses[8])
-        total_cost_x = penalty_eur_x - credits_eur_x + new_bio_total_t * bio_premium_eur_per_t_val + pooling_cost_x
-        if total_cost_x < best_cost: best_cost, best_x = total_cost_x, x
-    dec_opt = best_x
+        c = _total_cost_for_x(x)
+        if c < best_cost:
+            best_cost, best_x = c, x
+
+    # bracket around best coarse point (±3 bins)
+    bin_w = x_max / steps_coarse
+    a = max(0.0, best_x - 3 * bin_w)
+    b = min(x_max, best_x + 3 * bin_w)
+
+    # B) golden-section refinement on [a, b]
+    phi = (5 ** 0.5 - 1) / 2.0  # ≈0.618
+    tol = max(x_max * 1e-5, 1e-4)  # tonnes
+
+    c = b - phi * (b - a)
+    d = a + phi * (b - a)
+    fc = _total_cost_for_x(c)
+    fd = _total_cost_for_x(d)
+
+    it, max_iter = 0, 120
+    while (b - a) > tol and it < max_iter:
+        if fc <= fd:
+            b, d, fd = d, c, fc
+            c = b - phi * (b - a)
+            fc = _total_cost_for_x(c)
+        else:
+            a, c, fc = c, d, fd
+            d = a + phi * (b - a)
+            fd = _total_cost_for_x(d)
+        it += 1
+
+    dec_opt = (a + b) / 2.0
     bio_inc_opt = dec_opt * (LCV_SEL / LCV_BIO) if LCV_BIO > 0 else 0.0
-    dec_opt_list.append(dec_opt); bio_inc_opt_list.append(bio_inc_opt)
+    dec_opt_list.append(dec_opt)
+    bio_inc_opt_list.append(bio_inc_opt)
+
+
+
+
 
 # Recompute optimized cost columns (EUR)
 # ---- OPTIMIZER CHANGE 3: subtract credits; pooling cost from candidate, not base
